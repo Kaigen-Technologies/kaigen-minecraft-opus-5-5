@@ -1,0 +1,1 @@
+D:/dev/gabrieldechichi/hz-worktrees/wt-minecraft-kg-1/.claude/agents/hz-architect.md

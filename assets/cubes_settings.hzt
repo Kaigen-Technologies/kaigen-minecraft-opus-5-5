@@ -1,0 +1,10 @@
+type CubesSettings
+version 1
+---
+spin_speed 0.800000
+cube_count 5
+tint
+  r 0.900000
+  g 0.550000
+  b 0.200000
+  a 1.000000

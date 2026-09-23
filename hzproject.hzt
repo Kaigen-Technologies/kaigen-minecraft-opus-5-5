@@ -1,0 +1,12 @@
+type HzProjectConfig
+version 1
+---
+name minecraft-opus-5-5-kg-1
+engine hz
+src_roots 1 src
+asset_roots 1 assets
+test_roots 1 tests
+ios_bundle_name cubes
+ios_bundle_id com.kaigen.template.cubes
+publish
+  product_name "Cubes"
