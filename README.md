@@ -66,7 +66,7 @@ preview.png       project thumbnail
 | `wc_textures.c`, `wc_icons.c` | procedural block textures and inventory icons |
 | `wc_audio.c` | procedural sound effects and rain |
 | `wc_ui.c` | menus, settings, HUD, inventory, stats panel |
-| `wc_save.c` | settings and world saves |
+| `wc_settings.c` | settings presets and their renderer mapping |
 | `wc_storage.c` | the player's block edits, kept per chunk |
 
 ## Architecture
@@ -78,5 +78,3 @@ preview.png       project thumbnail
   water with screen-space reflections, volumetric clouds and light shafts, a precomputed-LUT atmosphere,
   temporal anti-aliasing with upscaling, bloom and auto exposure.
 - **Content.** Textures, icons and sounds are generated procedurally at startup; there are no art assets.
-- **Saves.** Settings, the player and every block edit are saved as engine blob assets in the user's app data
-  folder (the browser's private file system on the web).

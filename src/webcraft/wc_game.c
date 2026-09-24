@@ -16,8 +16,6 @@ const HzAppConfig hz_app_config = {
 };
 
 #define WC_ICON_SIZE 64
-#define WC_SAVE_DEBOUNCE 2.0f
-#define WC_META_INTERVAL 10.0f
 
 // ---- helpers used by the ui ----
 
@@ -52,30 +50,15 @@ void wc_game_select(WcGame *g, u32 slot) {
   wc_game_toast(g, wc_block_label[g->hotbar[slot]]);
 }
 
-void wc_game_apply_settings(WcGame *g, b32 save) {
+void wc_game_apply_settings(WcGame *g) {
   g->renderer.settings = wc_settings_render(&g->settings);
   g->world.render_distance = (i32)g->settings.render_distance;
   g->player.sensitivity = 0.0022f * g->settings.sensitivity;
   wc_render_invalidate_history(&g->renderer);
-  if (save && g->settings_path.len) wc_settings_write(&g->settings, g->settings_path.value);
 }
 
-// ---- persistence ----
-
-hz_internal WcWorldMeta wc_current_meta(WcGame *g) {
-  return (WcWorldMeta){.seed = g->seed, .has_player = true, .pos = g->player.pos, .yaw = g->player.yaw,
-                       .pitch = g->player.pitch, .flying = g->player.flying, .day_time = g->day_time,
-                       .hotbar = g->hotbar};
-}
-
-hz_internal void wc_save_world(WcGame *g) {
-  if (!g->started || !g->world_path.len || g->no_save) return;
-  WcWorldMeta meta = wc_current_meta(g);
-  if (wc_world_save_write(g->world_path.value, &meta, &g->edits)) g->edits.dirty = false;
-}
-
-// resets the player and camera state for the current seed / meta
-hz_internal void wc_start_world(WcGame *g, const WcWorldMeta *meta) {
+// resets the player and camera state for the current seed
+hz_internal void wc_start_world(WcGame *g) {
   if (!g->world_created) {
     wc_world_init(&g->world, g->seed, &g->edits, &g->meshes);
     g->world_created = true;
@@ -86,19 +69,11 @@ hz_internal void wc_start_world(WcGame *g, const WcWorldMeta *meta) {
   f32 sens = g->player.sensitivity;
   wc_player_init(&g->player);
   g->player.sensitivity = sens;
-  if (meta && meta->has_player) {
-    g->player.pos = meta->pos;
-    g->player.yaw = meta->yaw;
-    g->player.pitch = meta->pitch;
-    g->player.flying = meta->flying;
-    g->day_time = meta->day_time;
-  } else {
-    v3 sp = wc_find_spawn(&g->world.terrain);
-    g->player.pos = (WcV3d){sp.x, sp.y + 0.01, sp.z};
-    g->player.yaw = PI * 0.75f;
-    g->player.pitch = -0.05f;
-  }
-  log_info("webcraft: world seed % (%)", fmt_u32(g->seed), fmt_cstr(meta && meta->has_player ? "saved" : "new"));
+  v3 sp = wc_find_spawn(&g->world.terrain);
+  g->player.pos = (WcV3d){sp.x, sp.y + 0.01, sp.z};
+  g->player.yaw = PI * 0.75f;
+  g->player.pitch = -0.05f;
+  log_info("webcraft: world seed %", fmt_u32(g->seed));
   g->water_count = 0;
   g->started = false;
   g->spawn_ready = false;
@@ -113,65 +88,16 @@ void wc_game_new_world(WcGame *g) {
   g->seed = random_u32(&g->rng) & 0x7fffffffu;
   mem_cpy(g->hotbar, wc_default_hotbar, WC_HOTBAR_SLOTS);
   g->day_time = 0.08f;
-  wc_start_world(g, NULL);
-  WcWorldMeta meta = wc_current_meta(g);
-  meta.has_player = false;
-  wc_world_save_write(g->world_path.value, &meta, &g->edits);
+  wc_start_world(g);
 }
 
-hz_internal b32 wc_poll_file(OsFileOp **op, PlatformFileData *out, Allocator *alloc, b32 *done) {
-  if (!*op) {
-    *done = true;
-    return false;
-  }
-  OsFileReadState st = os_check_read_file(*op);
-  if (st == OS_FILE_READ_STATE_IN_PROGRESS) {
-    *done = false;
-    return false;
-  }
-  *done = true;
-  b32 ok = false;
-  if (st == OS_FILE_READ_STATE_COMPLETED) {
-    ok = os_get_file_data(*op, out, alloc);
-    if (!ok) os_release_file_op(*op);
-  } else {
-    os_release_file_op(*op);
-  }
-  *op = NULL;
-  return ok && out->success;
-}
-
-// async boot: read settings and the world save, then start generating
-hz_internal void wc_boot_poll(WcGame *g) {
-  if (g->boot != WC_BOOT_READ_SAVES) return;
-  b32 s_done, w_done;
-  PlatformFileData sd = {0};
-  if (wc_poll_file(&g->settings_op, &sd, &g->alloc, &s_done)) {
-    if (wc_settings_read(sd.buffer, sd.buffer_len, &g->settings)) g->settings_were_saved = true;
-  }
-  PlatformFileData wd = {0};
-  if (wc_poll_file(&g->world_op, &wd, &g->alloc, &w_done)) {
-    WcWorldMeta meta;
-    if (wc_world_save_read(wd.buffer, wd.buffer_len, &meta, g->hotbar, &g->edits)) {
-      g->pending_meta = meta;
-      g->has_pending_meta = true;
-    }
-  }
-  if (!s_done || !w_done) return;
-  g->auto_quality = !g->settings_were_saved && !g->no_save;
-  wc_game_apply_settings(g, false);
-  if (g->has_forced_seed) {
-    wc_edits_clear(&g->edits);
-    mem_cpy(g->hotbar, wc_default_hotbar, WC_HOTBAR_SLOTS);
-    g->seed = g->forced_seed;
-    wc_start_world(g, NULL);
-  } else if (g->has_pending_meta) {
-    g->seed = g->pending_meta.seed;
-    wc_start_world(g, &g->pending_meta);
-  } else {
-    g->seed = random_u32(&g->rng) & 0x7fffffffu;
-    wc_start_world(g, NULL);
-  }
+// first update: settings applied, then the world from the scripted or a random seed
+hz_internal void wc_boot_start(WcGame *g) {
+  if (g->boot != WC_BOOT_START) return;
+  g->auto_quality = !g->scripted;
+  wc_game_apply_settings(g);
+  g->seed = g->has_forced_seed ? g->forced_seed : random_u32(&g->rng) & 0x7fffffffu;
+  wc_start_world(g);
 }
 
 // ---- world interaction ----
@@ -235,7 +161,6 @@ hz_internal void wc_break_block(WcGame *g, WcRayHit h) {
       break;
   }
   wc_schedule_water(g, h.x, h.y, h.z, false);
-  g->save_debounce = WC_SAVE_DEBOUNCE;
 }
 
 hz_internal void wc_place_block(WcGame *g, WcRayHit h) {
@@ -260,7 +185,6 @@ hz_internal void wc_place_block(WcGame *g, WcRayHit h) {
   if (!wc_world_set_block(w, x, y, z, id, true)) return;
   wc_audio_place(&g->audio, id);
   if (id == B_WATER) wc_schedule_water(g, x, y, z, true);
-  g->save_debounce = WC_SAVE_DEBOUNCE;
 }
 
 // ---- weather ----
@@ -329,7 +253,7 @@ hz_internal void wc_handle_input(WcGame *g, f32 dt) {
   }
   if (g->mode == WC_MODE_SETTINGS) {
     if (wc_pressed(g, KEY_ESCAPE)) {
-      wc_game_apply_settings(g, true);
+      wc_game_apply_settings(g);
       wc_game_set_mode(g, g->settings_return == WC_MODE_MENU ? WC_MODE_MENU : WC_MODE_PAUSED);
     }
     return;
@@ -424,14 +348,13 @@ hz_internal void wc_auto_tune(WcGame *g, f32 dt) {
   if (median > 1.0f / 38.0f && p != WC_PRESET_CUSTOM && p != WC_PRESET_LOW) {
     WcPreset next = (WcPreset)(p - 1);
     wc_settings_apply_preset(&g->settings, next);
-    wc_game_apply_settings(g, false);
+    wc_game_apply_settings(g);
     Allocator fa = tctx_temp_allocator(NULL);
     String msg = str_format(&fa, "Graphics set to % for smoother performance",
                             fmt_cstr(next == WC_PRESET_LOW ? "low" : next == WC_PRESET_MEDIUM ? "medium" : "high"));
     wc_game_toast(g, msg.value);
   } else {
     g->auto_quality = false;
-    wc_settings_write(&g->settings, g->settings_path.value);
   }
 }
 
@@ -520,7 +443,7 @@ hz_internal void wc_game_update(WcGame *g, AppMemory *memory) {
     g->fps_frames = 0;
     g->fps_time = 0;
   }
-  wc_boot_poll(g);
+  wc_boot_start(g);
   if (!g->world_created) return;
 
   WcPlayer *p = &g->player;
@@ -596,18 +519,6 @@ hz_internal void wc_game_update(WcGame *g, AppMemory *memory) {
   b32 warm_night = g->day_time > 0.53f && g->day_time < 0.97f && g->rain < 0.2f && g->snow < 0.2f;
   wc_entities_update_fireflies(&g->ents, dt, &g->world, wc_player_camera(p, g->settings.bobbing), warm_night && g->started);
 
-  // saves: debounced after edits, periodic for the player position
-  if (g->save_debounce > 0) {
-    g->save_debounce -= dt;
-    if (g->save_debounce <= 0) wc_save_world(g);
-  }
-  g->meta_timer += dt;
-  if (g->meta_timer > WC_META_INTERVAL) {
-    g->meta_timer = 0;
-    wc_save_world(g);
-  }
-  // quitting finishes this frame: persist the world while it still exists
-  if (hz_quit_requested()) wc_save_world(g);
   if (g->toast_t < 10.0f) g->toast_t += dt;
   g->debug_timer -= dt;
   if (g->show_debug && g->debug_timer <= 0) {
@@ -706,8 +617,7 @@ hz_internal b32 wc_arg_f32(CString args, const char *key, f32 *out) {
 hz_internal void wc_cmd_view(const HzCommandCtx *ctx, void *user) {
   WcGame *g = user;
   WcPlayer *p = &g->player;
-  // a scripted camera never overwrites the player's save
-  g->no_save = true;
+  g->scripted = true;
   f32 v;
   if (wc_arg_f32(ctx->args, "x", &v)) p->pos.x = v;
   if (wc_arg_f32(ctx->args, "y", &v)) p->pos.y = v;
@@ -719,7 +629,7 @@ hz_internal void wc_cmd_view(const HzCommandCtx *ctx, void *user) {
   if (wc_arg_f32(ctx->args, "scale", &v)) {
     g->settings.render_scale = m_clampf(v, 0.5f, 1.0f);
     g->auto_quality = false;
-    wc_game_apply_settings(g, false);
+    wc_game_apply_settings(g);
   }
   if (wc_arg_f32(ctx->args, "debug", &v)) g->renderer.debug_view = (u32)v;
   if (wc_arg_f32(ctx->args, "above", &v)) {
@@ -747,20 +657,20 @@ hz_internal void wc_cmd_view(const HzCommandCtx *ctx, void *user) {
   wc_render_invalidate_history(&g->renderer);
 }
 
-// wc_seed:<n>: fresh world from a fixed seed; this session no longer saves
+// wc_seed:<n>: fresh world from a fixed seed
 hz_internal void wc_cmd_seed(const HzCommandCtx *ctx, void *user) {
   WcGame *g = user;
   f64 v = 0;
   if (!cstr_to_f64(ctx->args, &v)) return;
-  g->no_save = true;
+  g->scripted = true;
   g->auto_quality = false;
   g->forced_seed = (u32)v;
   g->has_forced_seed = true;
-  if (g->boot == WC_BOOT_READ_SAVES) return;
+  if (g->boot == WC_BOOT_START) return;
   wc_edits_clear(&g->edits);
   mem_cpy(g->hotbar, wc_default_hotbar, WC_HOTBAR_SLOTS);
   g->seed = g->forced_seed;
-  wc_start_world(g, NULL);
+  wc_start_world(g);
 }
 
 // wc_hud:0|1
@@ -800,7 +710,7 @@ hz_internal void wc_cmd_preset(const HzCommandCtx *ctx, void *user) {
                                                        : WC_PRESET_HIGH;
   wc_settings_apply_preset(&g->settings, p);
   g->auto_quality = false;
-  wc_game_apply_settings(g, false);
+  wc_game_apply_settings(g);
 }
 
 // wc_setblock:x y z id
@@ -890,17 +800,7 @@ HZ_APP_API void app_init(AppMemory *memory) {
   g->flash_timer = 20;
   g->weather_timer = 240 + random_f32(&g->rng) * 360;
   g->mode = WC_MODE_LOADING;
-  g->boot = WC_BOOT_READ_SAVES;
-
-  // saves live in the per-user app data dir; wasm keeps them in opfs under webcraft/
-  char *dir = ALLOC_ARRAY(a, char, 1024);
-  u32 n = os_app_data_dir("saves", dir, 1024);
-  String base = n ? STR(dir, n) : STR_FROM_CSTR("webcraft");
-  g->settings_path = str_format(a, "%/settings.hza", fmt_str(base));
-  g->world_path = str_format(a, "%/world.hza", fmt_str(base));
-  os_create_dir(base.value);
-  g->settings_op = os_file_exists(g->settings_path.value) ? os_start_read_file(g->settings_path.value) : NULL;
-  g->world_op = os_file_exists(g->world_path.value) ? os_start_read_file(g->world_path.value) : NULL;
+  g->boot = WC_BOOT_START;
 
   hz_command_register("wc_view", wc_cmd_view, g);
   hz_command_register("wc_play", wc_cmd_play, g);

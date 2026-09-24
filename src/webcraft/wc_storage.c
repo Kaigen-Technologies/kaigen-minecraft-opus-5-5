@@ -27,7 +27,6 @@ void wc_edits_clear(WcEditStore *s) {
   for (u32 i = 0; i < s->chunk_count; i++) ALLOC_FREE(&s->alloc, s->chunks[i].items);
   s->chunk_count = 0;
   mem_zero(s->table, sizeof(u32) * s->table_cap);
-  s->dirty = true;
 }
 
 hz_internal u32 wc_edits_find(const WcEditStore *s, u32 key) {
@@ -71,7 +70,6 @@ hz_internal WcChunkEdits *wc_edits_get_or_add(WcEditStore *s, i32 cx, i32 cz) {
 
 void wc_edits_record(WcEditStore *s, i32 cx, i32 cz, u16 index, u8 id) {
   WcChunkEdits *e = wc_edits_get_or_add(s, cx, cz);
-  s->dirty = true;
   for (u32 i = 0; i < e->count; i++) {
     if (e->items[i].index == index) {
       e->items[i].id = id;

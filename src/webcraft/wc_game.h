@@ -2,7 +2,7 @@
 #define WC_GAME_H
 
 #include "webcraft/wc_render.h"
-#include "webcraft/wc_save.h"
+#include "webcraft/wc_settings.h"
 #include "lib/random.h"
 #include "audio.h"
 #include "assets/assets.h"
@@ -149,27 +149,11 @@ void wc_icons_raster(u8 *pixels, const WcTextureData *tex, u32 size);
 // main lane: one icon texture per block id from the rasterised pixels (invalid for air)
 void wc_icons_upload(GpuTexture *out, u8 *pixels, u32 size);
 
-// ---- settings and persistence ----
+// ---- settings ----
 
 void wc_settings_defaults(WcSettings *s);
 void wc_settings_apply_preset(WcSettings *s, WcPreset preset);
 WcRenderSettings wc_settings_render(const WcSettings *s);
-b32 wc_settings_write(const WcSettings *s, const char *path);
-b32 wc_settings_read(const u8 *buf, u32 len, WcSettings *out);
-
-typedef struct {
-  u32 seed;
-  b32 has_player;
-  WcV3d pos;
-  f32 yaw, pitch;
-  b32 flying;
-  f32 day_time;
-  const u8 *hotbar;
-} WcWorldMeta;
-
-b32 wc_world_save_write(const char *path, const WcWorldMeta *meta, const WcEditStore *edits);
-// validates, fills meta and replaces the edit store's contents
-b32 wc_world_save_read(const u8 *buf, u32 len, WcWorldMeta *meta, u8 *hotbar_out, WcEditStore *edits);
 
 // ---- game ----
 
@@ -184,7 +168,7 @@ typedef enum {
 } WcMode;
 
 typedef enum {
-  WC_BOOT_READ_SAVES,
+  WC_BOOT_START,
   WC_BOOT_GENERATING,
   WC_BOOT_DONE,
 } WcBoot;
@@ -238,15 +222,7 @@ typedef struct {
   GpuTexture scrim;  // screen backdrop vignette
   b32 world_created;
 
-  // persistence
-  String settings_path, world_path;
-  OsFileOp *settings_op, *world_op;
-  b32 settings_were_saved;
   u32 seed;
-  WcWorldMeta pending_meta;
-  b32 has_pending_meta;
-  f32 save_debounce;
-  f32 meta_timer;
 
   // game
   WcSettings settings;
@@ -303,13 +279,13 @@ typedef struct {
   u32 inv_hover;
   OsCursor cursor;
   b32 test_play; // scripted runs play without grabbing the mouse
-  b32 no_save;   // scripted worlds never overwrite the player's save
+  b32 scripted;  // scripted runs keep the quality they were given
   b32 has_forced_seed;
   u32 forced_seed;
 } WcGame;
 
 void wc_game_toast(WcGame *g, const char *text);
-void wc_game_apply_settings(WcGame *g, b32 save);
+void wc_game_apply_settings(WcGame *g);
 void wc_game_new_world(WcGame *g);
 void wc_game_lock(WcGame *g);
 void wc_game_set_mode(WcGame *g, WcMode m);

@@ -528,7 +528,6 @@ typedef struct {
   u32 chunk_count, chunk_cap;
   u32 *table; // open addressing: chunk key -> index + 1
   u32 table_cap;
-  b32 dirty;
 } WcEditStore;
 
 void wc_edits_init(WcEditStore *s);

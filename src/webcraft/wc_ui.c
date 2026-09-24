@@ -118,10 +118,7 @@ hz_internal HzUIElementDesc wc_panel_desc(HzUIElementId id, f32 panel_w) {
 hz_internal void wc_loading_screen(WcGame *g) {
   f32 prog = 0.05f;
   const char *text = "Starting...";
-  if (g->boot == WC_BOOT_READ_SAVES) {
-    prog = 0.2f;
-    text = "Loading world...";
-  } else {
+  if (g->boot != WC_BOOT_START) {
     f32 wp = g->world_created ? wc_world_load_progress(&g->world, (i32)m_minf(4.0f, (f32)g->settings.render_distance)) : 0;
     prog = 0.3f + wp * 0.7f;
     Allocator fa = wc_frame_alloc();
@@ -492,13 +489,13 @@ hz_internal void wc_settings_screen(WcGame *g, f32 viewport_h) {
         wc_slider(g, WC_SLIDER_TIME_OF_DAY, "Time of day", &g->day_time, 0, 1, 0.005f);
       }
       if (wc_button(g, ui_id("SettingsDoneBtn"), "Done", WC_BTN_SETTINGS_DONE, true, true)) {
-        wc_game_apply_settings(g, true);
+        wc_game_apply_settings(g);
         wc_game_set_mode(g, g->settings_return == WC_MODE_PLAYING ? WC_MODE_PAUSED : g->settings_return);
       }
     }
   }
   if (custom) s->preset = WC_PRESET_CUSTOM;
-  if (changed) wc_game_apply_settings(g, true);
+  if (changed) wc_game_apply_settings(g);
 }
 
 // ---- inventory ----
