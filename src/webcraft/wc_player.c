@@ -113,7 +113,7 @@ void wc_player_update(WcPlayer *p, f32 dt, const WcPlayerInput *in, const WcWorl
     p->last_w = now;
   }
   if (in->sprint_key) p->sprinting = true;
-  if (!in->forward) p->sprinting = false;
+  if (!in->forward && in->stick_z > -0.5f) p->sprinting = false;
   p->sneaking = !p->flying && in->sneak;
   if (p->sneaking) p->sprinting = false;
 
@@ -124,6 +124,14 @@ void wc_player_update(WcPlayer *p, f32 dt, const WcPlayerInput *in, const WcWorl
   if (in->right) ix += 1;
   f32 il = m_sqrtf(ix * ix + iz * iz);
   if (il > 0) {
+    ix /= il;
+    iz /= il;
+  }
+  // the touch stick is analog: a half push walks at half speed
+  ix += in->stick_x;
+  iz += in->stick_z;
+  il = m_sqrtf(ix * ix + iz * iz);
+  if (il > 1) {
     ix /= il;
     iz /= il;
   }

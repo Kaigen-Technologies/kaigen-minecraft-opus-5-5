@@ -41,7 +41,7 @@ void wc_game_set_mode(WcGame *g, WcMode m) {
 
 void wc_game_lock(WcGame *g) {
   if (!g->started) return;
-  if (!g->test_play) os_lock_mouse(true);
+  if (!g->test_play && !g->touch_mode) os_lock_mouse(true);
   g->mode = WC_MODE_PLAYING;
 }
 
@@ -145,7 +145,7 @@ hz_internal void wc_tick_water(WcGame *g) {
   tctx_temp_allocator_end(tmp);
 }
 
-hz_internal void wc_break_block(WcGame *g, WcRayHit h) {
+void wc_break_block(WcGame *g, WcRayHit h) {
   wc_entities_trigger_swing(&g->ents);
   if (h.id == B_BEDROCK) return;
   WcWorld *w = &g->world;
@@ -163,7 +163,7 @@ hz_internal void wc_break_block(WcGame *g, WcRayHit h) {
   wc_schedule_water(g, h.x, h.y, h.z, false);
 }
 
-hz_internal void wc_place_block(WcGame *g, WcRayHit h) {
+void wc_place_block(WcGame *g, WcRayHit h) {
   u8 id = g->hotbar[g->selected];
   wc_entities_trigger_swing(&g->ents);
   i32 x = h.x + h.nx, y = h.y + h.ny, z = h.z + h.nz;
@@ -245,6 +245,8 @@ force_inline b32 wc_down(const WcGame *g, App_InputButtonType k) { return g->inp
 force_inline b32 wc_pressed(const WcGame *g, App_InputButtonType k) { return g->input.buttons[k].pressed_this_frame; }
 
 hz_internal void wc_handle_input(WcGame *g, f32 dt) {
+  g->touch_mode = g->input.last_category == INPUT_CATEGORY_TOUCH;
+  if (g->mode != WC_MODE_PLAYING || wc_touch_portrait(g)) wc_touch_reset(&g->touch);
   // modal keys outside play
   if (g->mode == WC_MODE_INVENTORY) {
     if (wc_pressed(g, KEY_E)) wc_game_lock(g);
@@ -259,8 +261,8 @@ hz_internal void wc_handle_input(WcGame *g, f32 dt) {
     return;
   }
   if (g->mode != WC_MODE_PLAYING) return;
-  // the platform can drop the lock on its own (escape in a browser, focus loss)
-  if (!g->test_play && !os_is_mouse_locked()) {
+  // the platform can drop the lock on its own (escape in a browser, focus loss); touch never takes it
+  if (!g->test_play && !g->touch_mode && !os_is_mouse_locked()) {
     wc_game_set_mode(g, WC_MODE_PAUSED);
     return;
   }
@@ -268,7 +270,8 @@ hz_internal void wc_handle_input(WcGame *g, f32 dt) {
     wc_game_set_mode(g, WC_MODE_PAUSED);
     return;
   }
-  wc_player_look(&g->player, g->input.mouse_delta.x, g->input.mouse_delta.y);
+  // touch looks with its own fingers; a touch-driven pointer is not a mouse
+  if (!g->touch_mode) wc_player_look(&g->player, g->input.mouse_delta.x, g->input.mouse_delta.y);
   for (u32 i = 0; i < WC_HOTBAR_SLOTS; i++)
     if (wc_pressed(g, (App_InputButtonType)(KEY_1 + i))) wc_game_select(g, i);
   f32 wheel = g->input.scroll_delta.y;
@@ -283,6 +286,11 @@ hz_internal void wc_handle_input(WcGame *g, f32 dt) {
   g->time_scale = 1;
   if (wc_down(g, KEY_T)) g->time_scale = (wc_down(g, KEY_LEFT_SHIFT) || wc_down(g, KEY_RIGHT_SHIFT)) ? -36.0f : 36.0f;
 
+  // a touch also drives the ui's left button: in touch play the fingers act, not the mouse buttons
+  if (g->touch_mode) {
+    if (!wc_touch_portrait(g)) wc_touch_update(g, dt);
+    return;
+  }
   g->break_cd -= dt;
   g->place_cd -= dt;
   b32 click_l = wc_pressed(g, MOUSE_LEFT), click_r = wc_pressed(g, MOUSE_RIGHT), click_m = wc_pressed(g, MOUSE_MIDDLE);
@@ -312,7 +320,7 @@ hz_internal void wc_handle_input(WcGame *g, f32 dt) {
 
 hz_internal WcPlayerInput wc_player_input(const WcGame *g) {
   if (g->mode != WC_MODE_PLAYING) return (WcPlayerInput){0};
-  return (WcPlayerInput){
+  WcPlayerInput in = {
       .forward = wc_down(g, KEY_W) || wc_down(g, KEY_UP),
       .back = wc_down(g, KEY_S) || wc_down(g, KEY_DOWN),
       .left = wc_down(g, KEY_A) || wc_down(g, KEY_LEFT),
@@ -324,6 +332,17 @@ hz_internal WcPlayerInput wc_player_input(const WcGame *g) {
       .forward_pressed = wc_pressed(g, KEY_W),
       .fly_pressed = wc_pressed(g, KEY_F),
   };
+  if (g->touch_mode) {
+    const WcTouch *t = &g->touch;
+    in.stick_x = t->stick_x;
+    in.stick_z = t->stick_z;
+    in.jump |= t->jump_held;
+    in.jump_pressed |= t->jump_pressed;
+    // a sneak toggled on the ground must not become a held descend once flying
+    in.sneak |= (t->sneak_on && !g->player.flying) || t->sneak_held;
+    in.sprint_key |= wc_touch_sprinting(t);
+  }
+  return in;
 }
 
 // after loading, watch the frame rate and step the preset down while it is too slow
@@ -436,6 +455,7 @@ hz_internal void wc_game_update(WcGame *g, AppMemory *memory) {
   f32 dt = m_clampf(memory->dt, 0.0001f, 0.1f);
   g->elapsed += dt;
   input_update(&g->input, &memory->input_events, memory->total_time);
+  g->input_now = memory->total_time;
   g->fps_frames++;
   g->fps_time += dt;
   if (g->fps_time >= 0.5f) {
@@ -510,7 +530,9 @@ hz_internal void wc_game_update(WcGame *g, AppMemory *memory) {
   g->day_time = m_fmodf(g->day_time + dt * g->time_scale / (g->settings.day_length * 60.0f) + 1.0f, 1.0f);
 
   WcV3d eye = wc_player_eye(p);
-  g->target = (g->mode == WC_MODE_PLAYING) ? wc_raycast(&g->world, eye, wc_player_forward(p), 5.5f) : (WcRayHit){0};
+  if (g->mode != WC_MODE_PLAYING) g->target = (WcRayHit){0};
+  else if (g->touch_mode) g->target = g->touch.target;
+  else g->target = wc_raycast(&g->world, eye, wc_player_forward(p), 5.5f);
   // smoothed eye sky light drives exposure and fog
   u8 el = wc_world_light(&g->world, wc_floor_i(eye.x), wc_floor_i(eye.y), wc_floor_i(eye.z));
   g->eye_sky += ((f32)(el >> 4) / 15.0f - g->eye_sky) * (1 - m_expf(-2 * dt));
@@ -571,7 +593,7 @@ hz_internal void wc_game_render(WcGame *g, AppMemory *memory) {
       .snow = g->snow,
       .snow_cover = g->snow_cover,
       .flash = g->flash,
-      .crosshair = g->mode == WC_MODE_PLAYING && !g->hide_hud,
+      .crosshair = g->mode == WC_MODE_PLAYING && !g->hide_hud && !g->touch_mode,
       .dpr = memory->dpr,
   };
   // the swapchain is the logical canvas at the effective dpr

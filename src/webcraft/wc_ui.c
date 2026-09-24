@@ -29,7 +29,11 @@ typedef enum {
   WC_BTN_SETTINGS_DONE,
   WC_BTN_MODAL_CANCEL,
   WC_BTN_MODAL_CONFIRM,
+  WC_BTN_INVENTORY_DONE,
 } WcButtonSlot;
+
+// a phone held in landscape is about 390 ui px tall: screens drop to their compact layout
+#define WC_COMPACT_H 500.0f
 
 hz_internal HzUIString wc_uis(const char *s) { return (HzUIString){.chars = s, .length = (i32)cstr_len(s)}; }
 
@@ -196,15 +200,28 @@ hz_internal void wc_new_world_modal(WcGame *g) {
   }
 }
 
+hz_internal const WcControlRow WC_TOUCH_CONTROLS[] = {
+    {"Left thumb", "Move \xc2\xb7 push to the edge to sprint"},
+    {"Drag", "Look around"},
+    {"Tap / hold", "Place / break a block"},
+    {"Jump", "Double-tap to fly \xc2\xb7 Sneak flies down"},
+};
+
 hz_internal void wc_menu_screen(WcGame *g) {
+  b32 compact = (f32)g->ui->canvas_height < WC_COMPACT_H;
+  const WcControlRow *controls = g->touch_mode ? WC_TOUCH_CONTROLS : WC_CONTROLS;
+  u32 control_count = g->touch_mode ? ARRAY_SIZE(WC_TOUCH_CONTROLS) : ARRAY_SIZE(WC_CONTROLS);
   HzUIElementDesc sd2 = wc_screen_desc(g, ui_id("MenuScreen"));
   ui_element_of(&sd2) {
     HzUIElementDesc pd8 = wc_panel_desc(ui_id("MenuPanel"), 460);
+    if (compact) pd8.layout.padding = (HzUIPadding){.left = 24, .right = 24, .top = 18, .bottom = 18};
     ui_element_of(&pd8) {
-      wc_title("WebCraft", 44);
-      ui_element({.layout = {.margin = {.bottom = 12}}}) { wc_muted("Shaders Edition \xe2\x80\x94 a voxel sandbox", 14); }
-      if (wc_button(g, ui_id("PlayBtn"), g->mode == WC_MODE_PAUSED ? "Resume" : "Click to Play", WC_BTN_PLAY, true,
-                    true))
+      wc_title("WebCraft", compact ? 30 : 44);
+      ui_element({.layout = {.margin = {.bottom = compact ? 6 : 12}}}) {
+        wc_muted("Shaders Edition \xe2\x80\x94 a voxel sandbox", 14);
+      }
+      const char *play = g->mode == WC_MODE_PAUSED ? "Resume" : g->touch_mode ? "Tap to Play" : "Click to Play";
+      if (wc_button(g, ui_id("PlayBtn"), play, WC_BTN_PLAY, true, true))
         wc_game_lock(g);
       ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .child_gap = 10}}) {
         if (wc_button(g, ui_id("SettingsBtn"), "Settings", WC_BTN_SETTINGS, false, true)) {
@@ -215,18 +232,18 @@ hz_internal void wc_menu_screen(WcGame *g) {
           ui_interact_modal_open(&g->new_world_modal);
       }
       ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .layout_direction = UI_TOP_TO_BOTTOM,
-                             .child_gap = 3, .padding = {.top = 14}}}) {
-        for (u32 i = 0; i < ARRAY_SIZE(WC_CONTROLS); i++) {
+                             .child_gap = 3, .padding = {.top = compact ? 8 : 14}}}) {
+        for (u32 i = 0; i < control_count; i++) {
           ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .child_gap = 14}}) {
             ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(130)}}}) {
-              ui_text(wc_uis(WC_CONTROLS[i].key),
+              ui_text(wc_uis(controls[i].key),
                       ui_text_config({.fontSize = 13, .weight = UI_FONT_SEMIBOLD, .textColor = WC_C_TEXT}));
             }
-            ui_text(wc_uis(WC_CONTROLS[i].what), ui_text_config({.fontSize = 13, .textColor = WC_C_MUTED}));
+            ui_text(wc_uis(controls[i].what), ui_text_config({.fontSize = 13, .textColor = WC_C_MUTED}));
           }
         }
       }
-      ui_element({.layout = {.padding = {.top = 14}}}) {
+      if (!compact) ui_element({.layout = {.padding = {.top = 14}}}) {
 #ifdef WASM
         wc_muted("Renderer: WebGPU", 12);
 #else
@@ -503,25 +520,32 @@ hz_internal void wc_settings_screen(WcGame *g, f32 viewport_h) {
 hz_internal void wc_inventory_screen(WcGame *g) {
   HzUIElementDesc sd4 = wc_screen_desc(g, ui_id("InventoryScreen"));
   ui_element_of(&sd4) {
+    b32 compact = (f32)g->ui->canvas_height < WC_COMPACT_H;
+    // compact: wider and shorter, so all 72 blocks fit a landscape phone without scrolling
+    u32 cols = compact ? 16 : WC_INV_COLS;
+    f32 cell = compact ? 40.0f : WC_INV_CELL, gap = compact ? 4.0f : WC_INV_GAP, icon = compact ? 30.0f : 42.0f;
     HzUIElementDesc pd9 = wc_panel_desc(ui_id("InventoryPanel"), 0);
+    if (compact) pd9.layout.padding = (HzUIPadding){.left = 20, .right = 20, .top = 14, .bottom = 14};
     ui_element_of(&pd9) {
-      wc_title("Blocks", 28);
-      wc_muted("Click a block to put it in the selected hotbar slot. Press E or Esc to close.", 14);
-      f32 grid_w = WC_INV_COLS * WC_INV_CELL + (WC_INV_COLS - 1) * WC_INV_GAP;
+      wc_title("Blocks", compact ? 22 : 28);
+      wc_muted(g->touch_mode ? "Tap a block to put it in the selected hotbar slot."
+                             : "Click a block to put it in the selected hotbar slot. Press E or Esc to close.",
+               14);
+      f32 grid_w = cols * cell + (cols - 1) * gap;
       i32 hovered = -1;
       ui_element({.id = ui_id("InventoryGrid"),
                   .layout = {.sizing = {.width = ui_sizing_fixed(grid_w)},
                              .layout_direction = UI_LEFT_TO_RIGHT_WRAP,
-                             .child_gap = (u16)WC_INV_GAP,
-                             .padding = {.top = 12}}}) {
+                             .child_gap = (u16)gap,
+                             .padding = {.top = compact ? 6 : 12}}}) {
         for (u32 i = 0; i < WC_INVENTORY_COUNT; i++) {
           u8 id = wc_inventory_order[i];
           HzUIElementId eid = ui_idi("InvItem", i);
           b32 hot = g->inv_hover == i + 1;
           ui_element({.id = eid,
-                      .layout = {.sizing = {.width = ui_sizing_fixed(WC_INV_CELL), .height = ui_sizing_fixed(WC_INV_CELL)},
+                      .layout = {.sizing = {.width = ui_sizing_fixed(cell), .height = ui_sizing_fixed(cell)},
                                  .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER},
-                                 .margin = {.bottom = (u16)WC_INV_GAP}},
+                                 .margin = {.bottom = (u16)gap}},
                       .background_color = hot ? (HzUIColor){255, 255, 255, 46} : (HzUIColor){255, 255, 255, 15},
                       .corner_radius = ui_corner_radius(8),
                       .border = {.color = hot ? (HzUIColor){255, 255, 255, 255} : (HzUIColor){255, 255, 255, 26},
@@ -535,17 +559,24 @@ hz_internal void wc_inventory_screen(WcGame *g) {
               g->hotbar[g->selected] = id;
               wc_game_toast(g, wc_block_label[id]);
             }
-            ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(42), .height = ui_sizing_fixed(42)}},
+            ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(icon), .height = ui_sizing_fixed(icon)}},
                         .image = {.texture = g->icons[id]},
                         .aspect_ratio = {1.0f}}) {}
           }
         }
       }
       g->inv_hover = hovered >= 0 ? (u32)hovered + 1 : 0;
-      ui_element({.layout = {.sizing = {.height = ui_sizing_fixed(20)}, .margin = {.top = 4}}}) {
-        if (hovered >= 0)
-          ui_text(wc_uis(wc_block_label[wc_inventory_order[hovered]]),
-                  ui_text_config({.fontSize = 13, .textColor = WC_C_MUTED}));
+      // no keyboard to close it with: a button, and the label row gives way to it
+      if (g->touch_mode) {
+        ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .margin = {.top = 4}}}) {
+          if (wc_button(g, ui_id("InventoryDoneBtn"), "Done", WC_BTN_INVENTORY_DONE, true, true)) wc_game_lock(g);
+        }
+      } else {
+        ui_element({.layout = {.sizing = {.height = ui_sizing_fixed(20)}, .margin = {.top = 4}}}) {
+          if (hovered >= 0)
+            ui_text(wc_uis(wc_block_label[wc_inventory_order[hovered]]),
+                    ui_text_config({.fontSize = 13, .textColor = WC_C_MUTED}));
+        }
       }
     }
   }
@@ -567,6 +598,82 @@ hz_internal void wc_error_screen(WcGame *g) {
 }
 
 // ---- hud ----
+
+#define WC_TOUCH_SIDE 44.0f // clears the notch of a phone held in landscape
+#define WC_TOUCH_BOTTOM 22.0f
+
+// a round on-screen button; `lit` while held or toggled on
+hz_internal void wc_touch_button(HzUIElementId id, const char *label, f32 size, v2 offset, b32 lit) {
+  ui_element({.id = id,
+              .floating = {.attach_to = UI_ATTACH_TO_ROOT,
+                           .attach_points = {.element = UI_ATTACH_POINT_RIGHT_BOTTOM,
+                                             .parent = UI_ATTACH_POINT_RIGHT_BOTTOM},
+                           .offset = {offset.x, offset.y},
+                           .z_index = 5,
+                           .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
+              .layout = {.sizing = {.width = ui_sizing_fixed(size), .height = ui_sizing_fixed(size)},
+                         .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
+              .background_color = lit ? (HzUIColor){255, 255, 255, 90} : (HzUIColor){10, 12, 16, 110},
+              .corner_radius = ui_corner_radius(size * 0.5f),
+              .border = {.color = {255, 255, 255, lit ? 220 : 90}, .width = ui_border_outside(2)}}) {
+    ui_text(wc_uis(label), ui_text_config({.fontSize = 13, .weight = UI_FONT_SEMIBOLD, .textColor = WC_C_TEXT}));
+  }
+}
+
+// stick, jump, sneak and menu, laid out for a phone in landscape; wc_touch_update hit-tests these ids
+hz_internal void wc_touch_hud(WcGame *g) {
+  const WcTouch *t = &g->touch;
+  f32 h = (f32)g->ui->canvas_height;
+  b32 stick = wc_touch_stick_active(t);
+  // the stick sits where the thumb landed; idle, a faint ring shows where to put it
+  v2 center = stick ? t->stick_center : (v2){WC_TOUCH_SIDE + 90, h - WC_TOUCH_BOTTOM - 90};
+  v2 knob = stick ? t->stick_knob : center;
+  const f32 base = 132, nub = 56;
+  ui_element({.id = ui_id("TouchStickBase"),
+              .floating = {.attach_to = UI_ATTACH_TO_ROOT, .offset = {center.x - base * 0.5f, center.y - base * 0.5f},
+                           .z_index = 4, .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
+              .layout = {.sizing = {.width = ui_sizing_fixed(base), .height = ui_sizing_fixed(base)}},
+              .background_color = {10, 12, 16, stick ? 90 : 40},
+              .corner_radius = ui_corner_radius(base * 0.5f),
+              .border = {.color = {255, 255, 255, stick ? 110 : 50}, .width = ui_border_outside(2)}}) {}
+  ui_element({.id = ui_id("TouchStickKnob"),
+              .floating = {.attach_to = UI_ATTACH_TO_ROOT, .offset = {knob.x - nub * 0.5f, knob.y - nub * 0.5f},
+                           .z_index = 5, .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
+              .layout = {.sizing = {.width = ui_sizing_fixed(nub), .height = ui_sizing_fixed(nub)}},
+              .background_color = {255, 255, 255, stick ? 150 : 60},
+              .corner_radius = ui_corner_radius(nub * 0.5f)}) {}
+
+  wc_touch_button(ui_id("TouchJump"), "Jump", 76, (v2){-WC_TOUCH_SIDE, -WC_TOUCH_BOTTOM}, t->jump_held);
+  b32 flying = g->player.flying;
+  wc_touch_button(ui_id("TouchSneak"), flying ? "Down" : "Sneak", 60, (v2){-WC_TOUCH_SIDE - 8, -WC_TOUCH_BOTTOM - 92},
+                  flying ? t->sneak_held : t->sneak_on);
+
+  ui_element({.id = ui_id("TouchPause"),
+              .floating = {.attach_to = UI_ATTACH_TO_ROOT,
+                           .attach_points = {.element = UI_ATTACH_POINT_RIGHT_TOP, .parent = UI_ATTACH_POINT_RIGHT_TOP},
+                           .offset = {-WC_TOUCH_SIDE, 12},
+                           .z_index = 6,
+                           .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
+              .layout = {.padding = {.left = 16, .right = 16, .top = 10, .bottom = 10}},
+              .background_color = {10, 12, 16, 140},
+              .corner_radius = ui_corner_radius(10),
+              .border = {.color = {255, 255, 255, 60}, .width = ui_border_outside(1)}}) {
+    ui_text(ui_string("Menu"), ui_text_config({.fontSize = 14, .weight = UI_FONT_SEMIBOLD, .textColor = WC_C_TEXT}));
+  }
+}
+
+// touch devices play in landscape: portrait gets this instead of the game's screens
+hz_internal void wc_rotate_prompt(WcGame *g) {
+  HzUIElementDesc sd = wc_screen_desc(g, ui_id("RotateScreen"));
+  sd.floating.z_index = 40;
+  ui_element_of(&sd) {
+    HzUIElementDesc pd = wc_panel_desc(ui_id("RotatePanel"), 0);
+    ui_element_of(&pd) {
+      wc_title("Rotate your phone", 24);
+      wc_muted("WebCraft plays in landscape.", 14);
+    }
+  }
+}
 
 hz_internal void wc_hud(WcGame *g) {
   // hotbar
@@ -602,6 +709,18 @@ hz_internal void wc_hud(WcGame *g) {
         }
       }
     }
+    // minecraft's "..." slot: the inventory, which a keyboard reaches with E
+    if (g->touch_mode) {
+      ui_element({.id = ui_id("TouchInventory"),
+                  .layout = {.sizing = {.width = ui_sizing_fixed(50), .height = ui_sizing_fixed(50)},
+                             .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
+                  .background_color = {255, 255, 255, 15},
+                  .corner_radius = ui_corner_radius(7),
+                  .border = {.color = {255, 255, 255, 20}, .width = ui_border_outside(2)}}) {
+        ui_text(ui_string("\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2"),
+                ui_text_config({.fontSize = 18, .weight = UI_FONT_BOLD, .textColor = WC_C_TEXT}));
+      }
+    }
   }
   // toast above the hotbar
   b32 visible = g->toast[0] != 0 && g->toast_t < 1.6f;
@@ -630,6 +749,11 @@ hz_internal void wc_hud(WcGame *g) {
       ui_text(wc_uis(g->debug_text), ui_text_config({.fontSize = 12, .lineHeight = 17, .textColor = {232, 232, 232, 255},
                                                       .wrapMode = UI_TEXT_WRAP_NEWLINES}));
     }
+  }
+  // the stick and buttons only mean something in play
+  if (g->touch_mode) {
+    if (g->mode == WC_MODE_PLAYING) wc_touch_hud(g);
+    return;
   }
   // key hint
   ui_element({.id = ui_id("Hint"),
@@ -706,12 +830,14 @@ void wc_ui_frame(WcGame *g, f32 dt) {
   ui_element({.id = ui_id("WcRoot"),
               .layout = {.sizing = {.width = ui_sizing_grow(0), .height = ui_sizing_grow(0)}},
               .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH}) {
-    // the settings panel is most of the screen tall: the hotbar would draw over it
+    // the settings panel is most of the screen tall, and on a short screen every panel is: the hotbar would draw over it
+    b32 compact = view_h < WC_COMPACT_H;
     if (g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR && g->mode != WC_MODE_SETTINGS && !g->hide_hud &&
-        g->started)
+        g->started && (!compact || g->mode == WC_MODE_PLAYING))
       wc_hud(g);
     if (g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR && g->started && !g->show_debug) wc_stats_panel(g);
-    switch (g->mode) {
+    if (wc_touch_portrait(g) && g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR) wc_rotate_prompt(g);
+    else switch (g->mode) {
     case WC_MODE_LOADING: wc_loading_screen(g); break;
     case WC_MODE_MENU:
     case WC_MODE_PAUSED: wc_menu_screen(g); break;

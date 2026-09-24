@@ -15,6 +15,8 @@ typedef struct {
   b32 jump, sneak, sprint_key;
   b32 jump_pressed, forward_pressed, fly_pressed;
   f32 look_dx, look_dy;
+  // analog move from the touch stick, strafe right / back positive, length <= 1
+  f32 stick_x, stick_z;
 } WcPlayerInput;
 
 typedef struct {
@@ -47,6 +49,41 @@ typedef struct {
 
 // voxel dda (Amanatides & Woo); liquids are transparent to it
 WcRayHit wc_raycast(const WcWorld *w, WcV3d o, v3 d, f32 max_dist);
+
+// ---- touch controls ----
+
+typedef enum {
+  WC_TOUCH_FREE,
+  WC_TOUCH_STICK,  // left thumb: the movement stick, centred where it landed
+  WC_TOUCH_WORLD,  // undecided: a tap places, a hold breaks, a drag looks
+  WC_TOUCH_LOOK,
+  WC_TOUCH_BREAK,
+  WC_TOUCH_BUTTON,
+  WC_TOUCH_IGNORED, // began outside play, or on nothing
+} WcTouchRole;
+
+typedef enum {
+  WC_TBTN_JUMP,
+  WC_TBTN_SNEAK,
+  WC_TBTN_INVENTORY,
+  WC_TBTN_PAUSE,
+  WC_TBTN_HOTBAR, // + slot index
+} WcTouchButton;
+
+typedef struct {
+  u32 id;
+  WcTouchRole role;
+  u32 button;
+} WcTouchTrack;
+
+typedef struct {
+  WcTouchTrack tracks[MAX_TOUCHES];
+  v2 stick_center, stick_knob; // ui px
+  f32 stick_x, stick_z;
+  b32 jump_held, jump_pressed;
+  b32 sneak_held, sneak_on;
+  WcRayHit target; // the block under the breaking finger
+} WcTouch;
 
 // ---- dynamic entities: held item, block-break particles, fireflies ----
 
@@ -279,6 +316,9 @@ typedef struct {
   u32 inv_hover;
   OsCursor cursor;
   b32 test_play; // scripted runs play without grabbing the mouse
+  WcTouch touch;
+  f32 input_now; // the clock touch start times are on; a still finger sends no events to advance its own
+  b32 touch_mode; // the last input was a touch: touch hud, no mouse lock
   b32 scripted;  // scripted runs keep the quality they were given
   b32 has_forced_seed;
   u32 forced_seed;
@@ -287,6 +327,18 @@ typedef struct {
 void wc_game_toast(WcGame *g, const char *text);
 void wc_game_apply_settings(WcGame *g);
 void wc_game_new_world(WcGame *g);
+void wc_break_block(WcGame *g, WcRayHit h);
+void wc_place_block(WcGame *g, WcRayHit h);
+
+// one playing frame of touch input: finger roles, stick, look, taps and buttons
+void wc_touch_update(WcGame *g, f32 dt);
+// drops every finger and toggle, for leaving play
+void wc_touch_reset(WcTouch *t);
+// touch devices are played in landscape; portrait shows a rotate prompt
+b32 wc_touch_portrait(const WcGame *g);
+b32 wc_touch_stick_active(const WcTouch *t);
+// pushed to the rim while mostly forward, like minecraft's "sprint using the joystick"
+b32 wc_touch_sprinting(const WcTouch *t);
 void wc_game_lock(WcGame *g);
 void wc_game_set_mode(WcGame *g, WcMode m);
 void wc_game_select(WcGame *g, u32 slot);
