@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WebCraft — Kaigen Engine</title>
+<meta name="description" content="A Minecraft-style voxel sandbox written by AI on Kaigen Engine: an endless world, block building, a day/night sky, clouds and weather. Running in your browser.">
+<link rel="canonical" href="https://kaigen3d.com/demos/kaigen-minecraft-opus-5-5/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="WebCraft — Kaigen Engine">
+<meta property="og:description" content="A Minecraft-style voxel sandbox written by AI on Kaigen Engine, running in your browser.">
+<meta property="og:url" content="https://kaigen3d.com/demos/kaigen-minecraft-opus-5-5/">
+<meta property="og:image" content="https://kaigen3d.com/demos/kaigen-minecraft-opus-5-5/poster.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="WebCraft — Kaigen Engine">
+<meta name="twitter:description" content="A Minecraft-style voxel sandbox written by AI on Kaigen Engine, running in your browser.">
+<meta name="twitter:image" content="https://kaigen3d.com/demos/kaigen-minecraft-opus-5-5/poster.jpg">
+<meta name="theme-color" content="#07080a">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #07080a; color: #f2f4f8; overflow: hidden; }
+  body { font: 400 14px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  #canvas { display: block; width: 100vw; height: 100vh; }
+
+  /* Overlays the canvas rather than replacing it: the canvas must keep its
+     real size from the first frame or the swapchain is created 0x0. */
+  #status {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    text-align: center;
+    padding: 24px;
+    background: #07080a;
+  }
+
+  #status[hidden] { display: none; }
+
+  .spark {
+    width: 9px;
+    height: 9px;
+    background: #E551BA;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+  .msg { color: #8a91a1; letter-spacing: .04em; max-width: 420px; text-wrap: pretty; }
+  .msg strong { color: #f2f4f8; font-weight: 600; display: block; margin-bottom: 6px; }
+  .msg a { color: #E551BA; }
+
+  @media (prefers-reduced-motion: reduce) { .spark { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<div id="status"><div class="spark"></div><p class="msg">Loading the engine…</p></div>
+
+<script type="module">
+  const canvas = document.getElementById("canvas");
+  const status = document.getElementById("status");
+
+  const show = (html) => { status.innerHTML = `<p class="msg">${html}</p>`; status.hidden = false; };
+
+  // Threads need SharedArrayBuffer, which needs cross-origin isolation. iOS
+  // Safari has neither, so it gets the single-threaded build. Feature
+  // detection, never UA sniffing: it self-corrects when WebKit's policy moves.
+  // Bumped every publish so immutable assets can never be served stale.
+  const VERSION = "__VERSION__";
+
+  // ?profile=mt|st forces one, for testing the other path on this machine.
+  const forced = new URLSearchParams(location.search).get("profile");
+  const threaded = self.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined";
+  const pick = forced === "mt" || forced === "st" ? forced : threaded ? "mt" : "st";
+  const dir = `./${VERSION}/${pick}/`;
+
+  if (!navigator.gpu) {
+    show(`<strong>This demo needs WebGPU.</strong>Try the latest Chrome, Edge or Safari. On iPhone it needs iOS 18 or newer.`);
+  } else {
+    try {
+      const { createGame } = await import(dir + "main.js");
+      const game = createGame({
+        canvas,
+        // Same-origin, resolved from the page so this works on any host.
+        // Cooked assets are served by the Worker out of R2 and edge-cached;
+        // an R2 custom domain cannot cache `.hza` without a Cache Rule.
+        baseUrl: new URL("./", location.href).href,
+        // Brotli-11, served verbatim with Content-Encoding: br by the site
+        // Worker; fetch decodes it natively.
+        // Absolute, because the worker resolves this against its own location,
+        // not the page — a relative "./mt/..." becomes "/mt/mt/...".
+        wasmUrl: new URL(dir + "game.wasm.br", location.href).href,
+      });
+
+      game.oncrash = (m) => show(`<strong>The demo crashed.</strong>${m ?? ""}`);
+
+      await game.ready;
+      status.hidden = true;
+    } catch (err) {
+      show(`<strong>Couldn't start the demo.</strong>${String(err && err.message || err)}`);
+    }
+  }
+</script>
+</body>
+</html>
