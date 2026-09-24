@@ -13,3 +13,4 @@ hz
 .cache
 *.log
 *.pdb
+.certs/

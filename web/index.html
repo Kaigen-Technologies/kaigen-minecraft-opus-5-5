@@ -66,15 +66,19 @@
 
   const show = (html) => { status.innerHTML = `<p class="msg">${html}</p>`; status.hidden = false; };
 
-  // Threads need SharedArrayBuffer, which needs cross-origin isolation. iOS
-  // Safari has neither, so it gets the single-threaded build. Feature
-  // detection, never UA sniffing: it self-corrects when WebKit's policy moves.
+  // Mobile ALWAYS gets the single-threaded wasm-ios build: threads are not reliable on
+  // phones even where the browser offers SharedArrayBuffer. Same test as the engine's
+  // os_is_mobile (src/os/wasm/main.ts). Desktop threads need cross-origin isolation.
   // Bumped every publish so immutable assets can never be served stale.
   const VERSION = "__VERSION__";
 
   // ?profile=mt|st forces one, for testing the other path on this machine.
   const forced = new URLSearchParams(location.search).get("profile");
-  const threaded = self.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined";
+  const mobile =
+    (navigator.userAgentData?.mobile ?? false) ||
+    (navigator.maxTouchPoints > 0 && matchMedia("(pointer: coarse)").matches) ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  const threaded = !mobile && self.crossOriginIsolated && typeof SharedArrayBuffer !== "undefined";
   const pick = forced === "mt" || forced === "st" ? forced : threaded ? "mt" : "st";
   const dir = `./${VERSION}/${pick}/`;
 
