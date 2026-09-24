@@ -767,7 +767,7 @@ HZ_APP_API void app_init(AppMemory *memory) {
   g->input = input_init();
   g->assets = asset_system_create(NULL);
   g->ui = ui_create(NULL, g->assets);
-  g->rng = random_create(os_time_unix_ms());
+  g->rng = random_create_type(RANDOM_PCG32, os_time_unix_ms());
   wc_settings_defaults(&g->settings);
   g->renderer.settings = wc_settings_render(&g->settings);
   g->renderer.gpu_timing = true;
