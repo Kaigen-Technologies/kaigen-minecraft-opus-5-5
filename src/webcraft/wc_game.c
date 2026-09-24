@@ -835,6 +835,8 @@ hz_internal GpuTexture wc_make_scrim(void) {
 HZ_APP_API void app_init(AppMemory *memory) {
   WcGame *g = memory->state;
   if (is_main_thread()) {
+    // render at 1 device px per logical px on every display
+    hz_set_max_dpr(1.0f);
     wc_render_create_pipelines(&g->renderer);
     // compiles start now, not when init returns: the rest of init overlaps them
     gpu_flush();
