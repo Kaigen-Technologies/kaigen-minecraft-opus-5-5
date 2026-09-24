@@ -54,14 +54,69 @@
   .msg a { color: #E551BA; }
 
   @media (prefers-reduced-motion: reduce) { .spark { animation: none; } }
+
+  /* "Made with Kaigen": a real link over the canvas; the game's input listeners sit on the canvas, not here */
+  #kaigen {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    height: 44px;
+    padding: 4px 16px 4px 4px;
+    border-radius: 999px;
+    background: rgba(10, 12, 16, .72);
+    border: 1px solid rgba(255, 255, 255, .14);
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    color: #f2f4f8;
+    font: 500 13px/1 ui-monospace, "SF Mono", Menlo, monospace;
+    letter-spacing: .02em;
+    text-decoration: none;
+    transition: opacity .25s ease, border-color .2s ease, background .2s ease, box-shadow .2s ease;
+  }
+  #kaigen:hover, #kaigen:focus-visible {
+    background: rgba(18, 20, 28, .86);
+    border-color: rgba(229, 81, 186, .7);
+    box-shadow: 0 0 22px rgba(229, 81, 186, .35);
+    outline: none;
+  }
+  #kaigen .mark {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle at 30% 25%, #2a1f3d, #120f1a 70%);
+    box-shadow: inset 0 0 0 1px rgba(229, 81, 186, .45);
+  }
+  #kaigen .mark img { width: 20px; height: 20px; display: block; }
+  #kaigen b { color: #E551BA; font-weight: 700; }
+  #kaigen .arrow { opacity: .7; }
+  /* in play the pointer is locked, so the link cannot be clicked: step back until the game pauses */
+  #kaigen.playing { opacity: .45; }
+  /* phones: the icon alone, the corner is shared with the game's Menu button */
+  @media (pointer: coarse), (max-width: 720px) {
+    #kaigen { padding: 4px; gap: 0; }
+    #kaigen .label { display: none; }
+  }
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
 <div id="status"><div class="spark"></div><p class="msg">Loading the engine…</p></div>
+<a id="kaigen" href="https://kaigen3d.com/?utm_source=demo&amp;utm_campaign=webcraft" target="_blank" rel="noopener" aria-label="Made with Kaigen. Open kaigen3d.com in a new tab">
+  <span class="mark"><img alt="" width="20" height="20" src="data:image/webp;base64,UklGRu4CAABXRUJQVlA4TOICAAAvX4AXEDXIkmS7bhvsf9HskkmDF9D5zAM3QhIk2aZtrXi2bdsj27Zt2xjZtm3btv1t49neENxIUiS5MqXaY76BH5w/AgcZhkZ34QWDxdmKN90SYOVWoCvoZxygSgVH9KPtDbpQiKS4gaIhkOEJioZo0raHKhEqRZO2AzSJVQPNxhKy8LY5RFMAxmTgILkHwffbZmbQ8VejTcvv0WPhHmNsYWyHTYuXMlzGoMo44769RqB+NfuIauOI6ea/pDqgMmyGoOr4QGgrpu7emXrCZQQq84fkVtKgd1aQ3YiYq9cRRxhbKSjwBt29W1jY2Q84AQislOmABITM1OsHywEBUOEyV69vDAcEsEDE2NJzE3hjql5fGJ4IPrmql+aACF4k2FhoBiekldQbwgQCum6qDeGJ8wBkJkrv9dMUplANOExdld5RCkc0zznwVFSem8KNQPD4l2PhvSlcCf91TE3EyvwX8dMU/vGfHLLj0+dl2hCezFAH04MZsb78KvUBGZyZ4fl6PEpMjjfuHnsCJxakkEdU+ZgwsdZh47NH8OCPFRlUC8HBV4cPfnAEXzd5i4bow3k5HhPnzf0qTrhekKLbhQIMExfQtQV19zMxuo3g+n0KyNMR1JOAHG0Kx3Pn+/jLN1tztC5kN4aPfb7m8CT0fmt2ul9zQYz2hdg5EionA1xBjJZx8PgAlXJBDK/Q8e2uBaRwx9IAVE6INuYHVE8IT90LyeCLqZVcEMErEnqW1ojjajSYdK0l4rwGnQYvK4lwkKlYSoJHUt6YhKKklaG7mqQViZaaqBWTvoq4lB1kSjykpOwgkOBuITD2puzAWwn3vaueN7uy9f2gUuFlbh5xK7kwtl4++2TqJWJXAuM78QbdgNe4qofjgM0pX/eGxddFOUbg7U75uvqFVY5/LAecb8QrNANOYXVUu0rEesDZHdFGTJwjsnRfBgZFOQZMvI0FA3QHfGHg/Uz5px3e6yA5A/4wmgM="></span>
+  <span class="label">Made with <b>Kaigen</b> <span class="arrow">&#8599;</span></span>
+</a>
 
 <script type="module">
   const canvas = document.getElementById("canvas");
+  const kaigen = document.getElementById("kaigen");
+  document.addEventListener("pointerlockchange", () =>
+    kaigen.classList.toggle("playing", document.pointerLockElement !== null));
   const status = document.getElementById("status");
 
   const show = (html) => { status.innerHTML = `<p class="msg">${html}</p>`; status.hidden = false; };
@@ -90,9 +145,9 @@
       const game = createGame({
         canvas,
         // Same-origin, resolved from the page so this works on any host.
-        // Cooked assets are served by the Worker out of R2 and edge-cached;
-        // an R2 custom domain cannot cache `.hza` without a Cache Rule.
-        baseUrl: new URL("./", location.href).href,
+        // Cooked assets are served by the Worker out of R2 and edge-cached for a
+        // year, under a hash of their content so a re-cook is never served stale.
+        baseUrl: new URL("./__ASSETS__/", location.href).href,
         // Brotli-11, served verbatim with Content-Encoding: br by the site
         // Worker; fetch decodes it natively.
         // Absolute, because the worker resolves this against its own location,

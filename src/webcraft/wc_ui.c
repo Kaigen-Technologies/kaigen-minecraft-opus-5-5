@@ -599,6 +599,8 @@ hz_internal void wc_error_screen(WcGame *g) {
 
 // ---- hud ----
 
+// the web page's "Made with Kaigen" link owns the top-right corner above this
+#define WC_BADGE_CLEAR 66.0f
 #define WC_TOUCH_SIDE 44.0f // clears the notch of a phone held in landscape
 #define WC_TOUCH_BOTTOM 22.0f
 
@@ -651,7 +653,7 @@ hz_internal void wc_touch_hud(WcGame *g) {
   ui_element({.id = ui_id("TouchPause"),
               .floating = {.attach_to = UI_ATTACH_TO_ROOT,
                            .attach_points = {.element = UI_ATTACH_POINT_RIGHT_TOP, .parent = UI_ATTACH_POINT_RIGHT_TOP},
-                           .offset = {-WC_TOUCH_SIDE, 12},
+                           .offset = {-WC_TOUCH_SIDE, WC_BADGE_CLEAR},
                            .z_index = 6,
                            .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
               .layout = {.padding = {.left = 16, .right = 16, .top = 10, .bottom = 10}},
@@ -759,7 +761,7 @@ hz_internal void wc_hud(WcGame *g) {
   ui_element({.id = ui_id("Hint"),
               .floating = {.attach_to = UI_ATTACH_TO_ROOT,
                            .attach_points = {.element = UI_ATTACH_POINT_RIGHT_TOP, .parent = UI_ATTACH_POINT_RIGHT_TOP},
-                           .offset = {-12, 10},
+                           .offset = {-12, WC_BADGE_CLEAR},
                            .z_index = 6,
                            .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH}}) {
     ui_text(ui_string("F3 debug \xc2\xb7 E inventory \xc2\xb7 Esc menu"),
