@@ -12,3 +12,4 @@ hz
 *.dSYM/
 .cache
 *.log
+*.pdb

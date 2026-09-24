@@ -5,8 +5,9 @@ name minecraft-opus-5-5-kg-1
 engine hz
 src_roots 1 src
 asset_roots 1 assets
+shader_roots 1 shaders
 test_roots 1 tests
-ios_bundle_name cubes
-ios_bundle_id com.kaigen.template.cubes
+ios_bundle_name WebCraft
+ios_bundle_id com.kaigen.webcraft
 publish
-  product_name "Cubes"
+  product_name "WebCraft"
