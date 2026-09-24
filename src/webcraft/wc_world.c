@@ -117,9 +117,19 @@ hz_internal void wc_lanes_init(WcWorld *w) {
   }
 }
 
+// the world arena's lifetime bound: tables, noise, lanes and every touched slot's storage (ios cannot reserve 2 GB)
+hz_internal u64 wc_world_arena_bytes(u32 lane_count) {
+  u64 slot_storage = 2 * (u64)WC_CHUNK_VOLUME + 2 * sizeof(u16) * WC_SECTIONS * WC_SECTION_META;
+  u64 per_slot = sizeof(WcChunk) + 3 * sizeof(u16) + sizeof(u32) + sizeof(u16) + 2 * sizeof(i32);
+  u64 tables = (u64)WC_MAX_CHUNKS * (per_slot + slot_storage) + WC_WANTED_MAX * sizeof(WcWanted) +
+               2 * WC_MAX_JOBS * sizeof(WcJob) + lane_count * sizeof(WcLane) + 16 * 1024;
+  // alignment padding of every allocation above, rounded to whole megabytes
+  return (tables + (4 * (u64)WC_MAX_CHUNKS + 64) * 64 + MB(1) - 1) & ~(u64)(MB(1) - 1);
+}
+
 void wc_world_init(WcWorld *w, u32 seed, WcEditStore *edits, WcMeshStore *meshes) {
   memzero_struct(w);
-  w->arena = arena_create(GB(2), MB(4));
+  w->arena = arena_create(wc_world_arena_bytes(tctx_current()->thread_count), MB(4));
   w->alloc = make_arena_allocator(w->arena);
   w->edits = edits;
   w->meshes = meshes;
