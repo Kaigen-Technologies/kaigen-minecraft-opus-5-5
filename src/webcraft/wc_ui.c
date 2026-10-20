@@ -18,9 +18,11 @@
 
 // the web page's "Made with Kaigen" link owns the top-right corner above this many logical px
 #define WC_BADGE_CLEAR 66.0f
-#define WC_LOGO_WORD "ASCIICRAFT"
+#define WC_LOGO_WORD "ASCII CRAFT"
 #define WC_LOGO_W (WC_CELL_W * (i32)(sizeof(WC_LOGO_WORD) - 1))
-#define WC_LOGO_H 9
+#define WC_LOGO_H WC_CELL_H
+// grid rows from which the big logo shows: below, it would push the menu's controls off the panel
+#define WC_LOGO_MIN_ROWS 30
 
 hz_internal Allocator wc_frame_alloc(void) { return tctx_temp_allocator(NULL); }
 
@@ -59,7 +61,7 @@ hz_internal b32 wc_button(WcGame *g, u32 id, WcRect r, const char *label, b32 pr
   return h.clicked;
 }
 
-// the game name in Monocraft letters, one cell per font pixel: stone glyphs in greys over a darker extruded shadow
+// the logo in Monocraft letters, one cell per font pixel: stone glyphs in greys over a darker extruded shadow
 hz_internal void wc_logo(WcTui *t, i32 x, i32 y) {
   const char *word = WC_LOGO_WORD;
   for (u32 pass = 0; pass < 2; pass++) {
@@ -86,14 +88,21 @@ hz_internal void wc_logo(WcTui *t, i32 x, i32 y) {
   }
 }
 
+hz_internal b32 wc_logo_fits(const WcTui *t, i32 panel_w) {
+  return panel_w >= WC_LOGO_W + 4 && (i32)t->rows >= WC_LOGO_MIN_ROWS;
+}
+
+// the title block's rows: the big logo when the grid has room, else spaced capitals
+hz_internal i32 wc_title_rows(const WcTui *t, i32 panel_w) { return wc_logo_fits(t, panel_w) ? WC_LOGO_H + 2 : 2; }
+
 // the title block: the big logo when the grid has room, else spaced capitals; returns rows used
 hz_internal i32 wc_title_block(WcTui *t, WcRect r, i32 y, const char *subtitle) {
-  if (r.w >= WC_LOGO_W + 4 && t->rows >= 30) {
+  if (wc_logo_fits(t, r.w)) {
     wc_logo(t, r.x + (r.w - WC_LOGO_W) / 2, y);
     wc_tui_center(t, r, y + WC_LOGO_H + 1, cstr_to_str(subtitle), WC_C_MUTED);
     return WC_LOGO_H + 2;
   }
-  wc_tui_center(t, r, y, STR_FROM_CSTR("A S C I I C R A F T"), WC_C_ACCENT);
+  wc_tui_center(t, r, y, STR_FROM_CSTR("A S C I I   C R A F T"), WC_C_ACCENT);
   wc_tui_center(t, r, y + 1, cstr_to_str(subtitle), WC_C_MUTED);
   return 2;
 }
@@ -119,7 +128,8 @@ hz_internal void wc_loading_screen(WcGame *g) {
     text = str_format(&fa, "Generating terrain...", fmt_u32(0));
   }
   wc_scrim(t);
-  WcRect p = wc_centred(t, MIN(WC_LOGO_W + 4, (i32)t->cols), t->rows >= 30 ? WC_LOGO_H + 8 : 7);
+  i32 pw = MIN(MAX(60, WC_LOGO_W + 4), (i32)t->cols);
+  WcRect p = wc_centred(t, pw, wc_logo_fits(t, pw) ? WC_LOGO_H + 8 : 7);
   wc_panel(t, p);
   i32 y = p.y + 1 + wc_title_block(t, p, p.y + 1, "a voxel sandbox");
   i32 bw = MIN(p.w - 10, 40);
@@ -187,12 +197,13 @@ hz_internal void wc_menu_screen(WcGame *g) {
   const WcControlRow *controls = g->touch_mode ? WC_TOUCH_CONTROLS : WC_CONTROLS;
   i32 control_count = g->touch_mode ? (i32)ARRAY_SIZE(WC_TOUCH_CONTROLS) : (i32)ARRAY_SIZE(WC_CONTROLS);
   i32 bh = compact ? 1 : 3;
-  i32 title_h = compact ? 2 : WC_LOGO_H + 2;
+  i32 pw = MIN(MAX(62, WC_LOGO_W + 4), (i32)t->cols);
+  i32 title_h = wc_title_rows(t, pw);
   i32 rows_left = (i32)t->rows - 2 - title_h - 2 * bh - 3;
   i32 shown = MAX(0, MIN(control_count, rows_left - (compact ? 0 : 2)));
   i32 h = 2 + title_h + 1 + 2 * bh + 1 + (shown ? shown + 1 : 0) + (compact ? 0 : 2);
   wc_scrim(t);
-  WcRect p = wc_centred(t, MIN(MAX(62, WC_LOGO_W + 4), (i32)t->cols), h);
+  WcRect p = wc_centred(t, pw, h);
   wc_panel(t, p);
   i32 y = p.y + 1 + wc_title_block(t, p, p.y + 1, "a voxel sandbox") + 1;
   const char *play = g->mode == WC_MODE_PAUSED ? "Resume" : g->touch_mode ? "Tap to Play" : "Click to Play";

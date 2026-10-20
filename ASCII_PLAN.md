@@ -122,7 +122,7 @@ Everything below was measured from the three videos: frames extracted with ffmpe
    - Glyph: the cell's mean colour × `WC_INK_GAIN` 2.5, reduced only so no channel clips.
    - Background: navy (0.035, 0.035, 0.077) plus the glyph colour × the background tint setting: Black 0, Faint 0.25, Full 0.38 (default Full; 0.45 at first, lowered so glyphs separate more from their cells).
      - *Why the background carries the colour:* a glyph covers only 5–45% of its cell, so on a dark background a cell shows a fraction of the scene's brightness. At tint 0.15 the bright, readable shaded scene (`out/look_forest2_ldr.png`) became dim specks on black, and near and far could not be told apart (`out/look_forest2.png`). With the colour in the background and brighter ink over it, faces read as lit planes, top and side faces differ, and the glyphs still carry contrast (`out/look_forest4.png`).
-   - No lift to a fixed brightness.
+   - Shadow floor (owner, 2026-10-20: shadows were "basically pure black"): ink brightness maps onto [`WC_INK_FLOOR` 0.3, 1], so the order lit > shaded is kept, and near-black cells fade to neutral grey. A surface cell is never blank: what would map to the ramp's space takes `.`, and a blank is never kept by the hysteresis. On the seed-12345 view, blank surface cells went from 36.6% to 0, and the darkest cells' ink from 14 to 86 (of 255) and their background from 13 to 38.
 7. **Sky:**
    - its colour as a smooth background;
    - clouds through the cloud matcher;
@@ -179,7 +179,7 @@ For each cell (`shaders/wc_ascii_cells.glsl`):
 `wc_ui.c` is rewritten on a new `wc_tui.c`: immediate-mode widgets on a character grid, hit-tested in cells. Clay, the MSDF Inter font, the isometric pixel icons and the scrim texture are no longer used.
 
 - **UI grid:** the scene grid × an integer m, so UI glyphs line up with scene cells. m is picked for readable text (capital height ≥ ~12 CSS px).
-- **Logo:** "WEBCRAFT" in Monocraft letters scaled to one cell per pixel. Each letter is filled with stone glyphs in greys, with a darker extruded shadow, the way the Minecraft logo looks.
+- **Logo:** "ASCII CRAFT" on one line in Monocraft letters scaled to one cell per pixel, shown when the panel is 70 cells wide and the grid 30 rows tall (spaced capitals otherwise). Each letter is filled with stone glyphs in greys, with a darker extruded shadow, the way the Minecraft logo looks.
 - **Widgets:**
   - buttons `[ Play ]` (Minecraft's yellow text on hover);
   - sliders `[######|.......] 12 ch`;

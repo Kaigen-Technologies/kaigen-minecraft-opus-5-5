@@ -17,7 +17,7 @@ layout(binding = 1) uniform _CellTables {
 layout(binding = 2) uniform _CellParams {
     uvec4 grid;    // cols, rows, previous cells valid, translucent surfaces drawn
     vec4 ink;      // sky ink brightest channel target, sky ink gain ceiling, surface ink gain, background tint
-    vec4 sky;      // sky background tint, unused, glow strength, fill ramp hysteresis (steps)
+    vec4 sky;      // sky background tint, surface ink floor, glow strength, fill ramp hysteresis (steps)
     vec4 sel_min;  // xyz camera-relative selection min, w active
     vec4 sel_max;  // xyz camera-relative selection max
 } P;
@@ -82,12 +82,12 @@ uint luma8(vec3 c) { return (54u * u8_of(c.r) + 183u * u8_of(c.g) + 19u * u8_of(
 
 uint ramp_at(uint p) { return T.ramp[p >> 2u][p & 3u]; }
 
-// the fill glyph for a mean luma; last frame's glyph stays while its ramp step is within the hysteresis
+// the fill glyph for a mean luma; last frame's glyph stays while its ramp step is within the hysteresis (a blank never does)
 uint ramp_glyph(uint luma, uint prev) {
     uint p = T.ramp_lut[luma >> 2u][luma & 3u];
     if (prev < 95u) {
         uint q = T.rank[prev >> 2u][prev & 3u];
-        if (q != 255u && uint(abs(int(q) - int(p))) <= uint(P.sky.w)) return prev;
+        if (q != 255u && q != 0u && uint(abs(int(q) - int(p))) <= uint(P.sky.w)) return prev;
     }
     return ramp_at(p);
 }
@@ -186,10 +186,12 @@ vec3 lift(vec3 c) {
     return saturate(c * clamp(P.ink.x / m, 1.0, P.ink.y));
 }
 
-// surface ink: the scene colour times a gain, reduced only so no channel clips (hue and relative brightness survive)
+// surface ink: the gained colour's brightness mapped onto [floor, 1] so shadows stay legible; near-black cells go grey
 vec3 ink_colour(vec3 c) {
-    float m = max(max(c.r, c.g), max(c.b, 1e-3));
-    return c * min(P.ink.z, 1.0 / m);
+    float m = max(max(c.r, c.g), c.b);
+    float bright = m * min(P.ink.z, 1.0 / max(m, 1e-3));
+    vec3 hue = (c + 0.02) / (m + 0.02);
+    return hue * (P.sky.y + (1.0 - P.sky.y) * bright);
 }
 
 // the background under empty and surface cells, measured on the reference

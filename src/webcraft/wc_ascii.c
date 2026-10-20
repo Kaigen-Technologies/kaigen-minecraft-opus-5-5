@@ -158,9 +158,10 @@ void wc_ascii_build_ramp(WcAsciiTables *t, const char *vocab, u32 lo, u32 hi, f3
     ramp[pos] = g;
     rank[g] = pos;
   }
+  // a surface is never blank: what would map to the ramp's lightest step (the space) takes the next one
   for (u32 l = 0; l < 256; l++) {
     f32 ink = m_powf(m_clampf(((f32)l - (f32)lo) / (f32)(hi - lo), 0.0f, 1.0f), curve);
-    lut[l] = (u32)(ink * (f32)(count - 1) + 0.5f);
+    lut[l] = MAX(1u, (u32)(ink * (f32)(count - 1) + 0.5f));
   }
 }
 

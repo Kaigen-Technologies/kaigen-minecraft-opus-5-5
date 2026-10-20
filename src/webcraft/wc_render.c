@@ -46,6 +46,7 @@ static_assert(sizeof(WcAsciiTables) == sizeof(ShaderWcAsciiCellsCellTables), "Wc
 #define WC_FILL_HI 150u         // cell mean display luma that reaches the densest glyph
 #define WC_FILL_CURVE 1.0f      // ramp exponent between them
 #define WC_INK_GAIN 2.5f        // glyph colour over the cell mean, bounded so no channel clips
+#define WC_INK_FLOOR 0.3f       // the dimmest surface ink: shadows keep legible glyphs instead of going black
 #define WC_RAMP_HYSTERESIS 1u   // ramp steps a cell's last glyph may drift before it changes
 #define WC_ASCII_SATURATION 1.3f // glyphs are thin: hue has to carry the material
 #define WC_ASCII_CONTRAST 1.85f   // agx look power: ink density only separates what the tonemap separates
@@ -1584,7 +1585,7 @@ void wc_render_frame(WcRenderer *r, const WcWorld *world, const WcFrameInput *in
   ShaderWcAsciiCellsCellParams cells_p = {
       .grid = {grid.cols, grid.rows, r->cells_valid ? 1u : 0u, translucent ? 1u : 0u},
       .ink = {0.92f, 3.0f, WC_INK_GAIN, s->ascii_tint},
-      .sky = {0.8f, 0.35f, s->ascii_glow, (f32)WC_RAMP_HYSTERESIS}};
+      .sky = {0.8f, WC_INK_FLOOR, s->ascii_glow, (f32)WC_RAMP_HYSTERESIS}};
   if (in->has_selection) {
     cells_p.sel_min = (v4){(f32)(in->sel.x - cam.x), (f32)(in->sel.y - cam.y), (f32)(in->sel.z - cam.z), 1};
     cells_p.sel_max = (v4){(f32)(in->sel.x + 1 - cam.x), (f32)(in->sel.y + 1 - cam.y), (f32)(in->sel.z + 1 - cam.z), 0};

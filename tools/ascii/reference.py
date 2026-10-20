@@ -47,7 +47,8 @@ def fill_ramp(cells):
     ramp = sorted(vocab, key=key)
     rank = {g: i for i, g in enumerate(ramp)}
     lo, hi, curve = render_define("WC_FILL_LO"), render_define("WC_FILL_HI"), render_define("WC_FILL_CURVE")
-    lut = [int(min(1.0, max(0.0, (l - lo) / (hi - lo))) ** curve * (len(ramp) - 1) + 0.5) for l in range(256)]
+    # a surface is never blank: what would map to the lightest step takes the next one (wc_ascii_build_ramp)
+    lut = [max(1, int(min(1.0, max(0.0, (l - lo) / (hi - lo))) ** curve * (len(ramp) - 1) + 0.5)) for l in range(256)]
     return ramp, rank, lut
 
 
@@ -182,7 +183,7 @@ def main():
         l = (total + 27) // 54
         # the held item's luma is pushed into the dense half of the ramp (hand_luma in wc_ascii_cells.glsl)
         p = lut[96 + l * 5 // 8 if hand else l]
-        if pg in rank and abs(rank[pg] - p) <= hyst:
+        if pg in rank and rank[pg] != 0 and abs(rank[pg] - p) <= hyst:
             return pg
         return ramp[p]
 
