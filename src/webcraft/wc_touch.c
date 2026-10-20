@@ -12,7 +12,7 @@
 #define WC_REACH 5.5f
 
 b32 wc_touch_portrait(const WcGame *g) {
-  return g->touch_mode && g->ui->canvas_height > g->ui->canvas_width;
+  return g->touch_mode && g->canvas_h > g->canvas_w;
 }
 
 void wc_touch_reset(WcTouch *t) {
@@ -35,27 +35,27 @@ hz_internal WcTouchTrack *wc_touch_track_new(WcTouch *t, u32 id) {
   return NULL;
 }
 
-hz_internal b32 wc_touch_hits(HzUIElementId id, f32 x, f32 y) {
-  HzUIElementData d = ui_get_element_data(id);
-  if (!d.found) return false;
+hz_internal b32 wc_touch_hits(const WcTui *t, u32 id, f32 x, f32 y) {
+  WcRect r;
+  if (!wc_tui_find(t, id, &r)) return false;
   // a few px of forgiveness around every button
   const f32 m = 6;
-  return x >= d.boundingBox.x - m && x <= d.boundingBox.x + d.boundingBox.width + m && y >= d.boundingBox.y - m &&
-         y <= d.boundingBox.y + d.boundingBox.height + m;
+  f32 x0 = t->ox + (f32)r.x * t->cw, y0 = t->oy + (f32)r.y * t->ch;
+  return x >= x0 - m && x <= x0 + (f32)r.w * t->cw + m && y >= y0 - m && y <= y0 + (f32)r.h * t->ch + m;
 }
 
 // buttons are hit-tested against last frame's layout, which is exactly what is on screen
-hz_internal b32 wc_touch_button_at(f32 x, f32 y, u32 *out) {
+hz_internal b32 wc_touch_button_at(const WcTui *t, f32 x, f32 y, u32 *out) {
   for (u32 i = 0; i < WC_HOTBAR_SLOTS; i++) {
-    if (wc_touch_hits(ui_idi("HotbarSlot", i), x, y)) {
+    if (wc_touch_hits(t, wc_tui_id("HotbarSlot", i), x, y)) {
       *out = WC_TBTN_HOTBAR + i;
       return true;
     }
   }
-  if (wc_touch_hits(ui_id("TouchJump"), x, y)) *out = WC_TBTN_JUMP;
-  else if (wc_touch_hits(ui_id("TouchSneak"), x, y)) *out = WC_TBTN_SNEAK;
-  else if (wc_touch_hits(ui_id("TouchInventory"), x, y)) *out = WC_TBTN_INVENTORY;
-  else if (wc_touch_hits(ui_id("TouchPause"), x, y)) *out = WC_TBTN_PAUSE;
+  if (wc_touch_hits(t, wc_tui_id("TouchJump", 0), x, y)) *out = WC_TBTN_JUMP;
+  else if (wc_touch_hits(t, wc_tui_id("TouchSneak", 0), x, y)) *out = WC_TBTN_SNEAK;
+  else if (wc_touch_hits(t, wc_tui_id("TouchInventory", 0), x, y)) *out = WC_TBTN_INVENTORY;
+  else if (wc_touch_hits(t, wc_tui_id("TouchPause", 0), x, y)) *out = WC_TBTN_PAUSE;
   else return false;
   return true;
 }
@@ -63,7 +63,7 @@ hz_internal b32 wc_touch_button_at(f32 x, f32 y, u32 *out) {
 // the world ray under a screen point, through the camera the frame is rendered with
 hz_internal WcRayHit wc_touch_ray(const WcGame *g, f32 x, f32 y) {
   const WcPlayer *p = &g->player;
-  f32 w = (f32)g->ui->canvas_width, h = (f32)g->ui->canvas_height;
+  f32 w = g->canvas_w, h = g->canvas_h;
   if (w <= 0 || h <= 0) return (WcRayHit){0};
   v3 fwd = wc_player_forward(p);
   v3 right = v3_normalize(v3_cross(fwd, (v3){0, 1, 0}));
@@ -92,7 +92,7 @@ hz_internal void wc_touch_button_up(WcGame *g, u32 button) {
 void wc_touch_update(WcGame *g, f32 dt) {
   WcTouch *t = &g->touch;
   const MobileTouches *touches = &g->input.touches;
-  f32 w = (f32)g->ui->canvas_width;
+  f32 w = g->canvas_w;
   t->jump_pressed = false;
   t->jump_held = false;
   t->sneak_held = false;
@@ -111,7 +111,7 @@ void wc_touch_update(WcGame *g, f32 dt) {
       u32 button;
       b32 stick_taken = false;
       for (u32 k = 0; k < MAX_TOUCHES; k++) stick_taken |= t->tracks[k].role == WC_TOUCH_STICK;
-      if (wc_touch_button_at(mt->start_x, mt->start_y, &button)) {
+      if (wc_touch_button_at(&g->tui, mt->start_x, mt->start_y, &button)) {
         tr->role = WC_TOUCH_BUTTON;
         tr->button = button;
         wc_touch_button_down(g, button);

@@ -57,7 +57,8 @@ void wc_settings_apply_preset(WcSettings *s, WcPreset preset) {
 
 void wc_settings_defaults(WcSettings *s) {
   *s = (WcSettings){.fov = 75, .sensitivity = 1, .bobbing = true, .day_length = 20, .cloud_coverage = 0.4f,
-                    .weather = WC_WEATHER_AUTO, .volume = 0.6f};
+                    .weather = WC_WEATHER_AUTO, .volume = 0.6f, .text_size = 1, .ascii_tint = 2,
+                    .ascii_glow = true};
   wc_settings_apply_preset(s, WC_PRESET_HIGH);
 }
 
@@ -65,5 +66,7 @@ WcRenderSettings wc_settings_render(const WcSettings *s) {
   return (WcRenderSettings){.render_distance = s->render_distance, .render_scale = s->render_scale,
                             .shadows = s->shadows, .shadow_res = s->shadow_res,
                             .shadow_distance = s->shadow_distance, .ssao = s->ssao, .volumetrics = s->volumetrics,
-                            .clouds = s->clouds, .ssr = s->ssr, .taa = s->taa, .bloom = s->bloom, .fov = s->fov};
+                            .clouds = s->clouds, .ssr = s->ssr, .taa = s->taa, .bloom = s->bloom, .fov = s->fov,
+                            .text_size = s->text_size, .ascii_tint = wc_ascii_tint(s->ascii_tint),
+                            .ascii_glow = s->ascii_glow ? 1.0f : 0.0f, .ascii_palette = s->ascii_palette};
 }

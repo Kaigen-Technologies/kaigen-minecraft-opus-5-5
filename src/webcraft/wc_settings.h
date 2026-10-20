@@ -42,6 +42,10 @@ typedef struct WcSettings {
   f32 cloud_coverage;
   WcWeatherMode weather;
   f32 volume;
+  u32 text_size;     // 0 large, 1 medium, 2 small
+  u32 ascii_tint;    // cell background: 0 black, 1 faint, 2 full (wc_ascii_tint)
+  b32 ascii_glow;    // halo under emissive glyphs
+  u32 ascii_palette; // 0 colour, 1 phosphor, 2 amber
 } WcSettings;
 
 #endif

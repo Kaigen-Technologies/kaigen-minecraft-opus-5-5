@@ -2,6 +2,7 @@
 #define WC_RENDER_H
 
 #include "webcraft/wc.h"
+#include "webcraft/wc_ascii.h"
 
 // ---- procedural block textures ----
 
@@ -43,6 +44,10 @@ typedef struct {
   b32 taa;
   b32 bloom;
   f32 fov;
+  u32 text_size;     // 0 large, 1 medium, 2 small (wc_ascii_text_css)
+  f32 ascii_tint;    // surface background as a fraction of the cell colour
+  f32 ascii_glow;    // emissive halo strength
+  u32 ascii_palette; // 0 colour, 1 phosphor, 2 amber
 } WcRenderSettings;
 
 typedef struct {
@@ -57,6 +62,8 @@ typedef struct {
   f32 rain, wetness, snow, snow_cover, flash;
   b32 crosshair;
   f32 dpr;
+  const u8 *ui_cells; // the text ui, WC_TUI_CELL_BYTES per cell, ui_cols x ui_rows (NULL for none)
+  u32 ui_cols, ui_rows;
 } WcFrameInput;
 
 // mirrors _Frame in shaders/wc_frame.glsl
@@ -68,7 +75,7 @@ typedef struct {
   v4 cam_pos, cam_delta;
   v4 sun_dir, moon_dir, light_dir;
   v4 sun_color, moon_color, light_color;
-  v4 res, jitter, fog, world, cloud, settings, weather, sky, extra;
+  v4 res, jitter, fog, world, cloud, settings, weather, sky, extra, ascii;
 } WcFrameUniforms;
 
 // a column part's sections [first, last] that passed the frustum; record indexes the per-frame draw records
@@ -97,7 +104,6 @@ typedef struct {
 } WcBatchList;
 
 #define WC_CASCADES 4
-#define WC_MAX_DPR 1.5f
 #define WC_BLOOM_LEVELS 6
 #define WC_ENTITY_STRIDE 13
 #define WC_ENTITY_MAX_VERTS 12000
@@ -143,7 +149,7 @@ typedef struct {
   GpuPipeline transmittance, multiscatter, skyview, sky_ambient;
   GpuPipeline terrain, entity, entity_hand, shadow, shadow_clear, water;
   GpuPipeline ssao, clouds, clouds_temporal, deferred, shafts, atmospherics, taa;
-  GpuPipeline bloom_down, bloom_up, exposure, final;
+  GpuPipeline bloom_down, bloom_up, exposure, tonemap, ascii_cells, ascii_compose;
 
   GpuTexture blk_albedo, blk_normal, blk_spec;
   GpuTexture noise_base, noise_detail, weather; // full mip chains, written once by the noise bake
@@ -173,6 +179,18 @@ typedef struct {
   GpuRenderTarget cloud_cur, cloud_hist[2];
   GpuRenderTarget bloom[WC_BLOOM_LEVELS];
   u32 bloom_w[WC_BLOOM_LEVELS], bloom_h[WC_BLOOM_LEVELS];
+
+  // ascii: the tonemapped scene at grid resolution, the cell targets (ping-pong for hysteresis), the font
+  WcAsciiGrid grid;
+  GpuRenderTarget ldr, cells[2];
+  u32 cells_idx;
+  b32 cells_valid;
+  GpuTexture atlas, ui_tex;
+  u32 ui_w, ui_h;
+  WcAsciiTables *tables;
+  b32 atlas_test;
+  // test dump of one frame's ascii inputs and outputs: requested, queued, then written once the reads land
+  u32 dump_state, dump_tag, dump_cells, dump_w, dump_h, dump_cols, dump_rows;
 
   GpuBuffer quad_ib;
   u32 quad_ib_quads;
@@ -211,10 +229,15 @@ typedef struct {
 // first thing at startup: on wasm the pipelines compile while the rest of init and the first frames run
 void wc_render_create_pipelines(WcRenderer *r);
 // settings must be filled first; creates every target at the initial output size (device px)
-void wc_render_init(WcRenderer *r, Allocator *alloc, const WcTextureData *tex, u32 out_w, u32 out_h, f32 dpr);
+void wc_render_init(WcRenderer *r, Allocator *alloc, const WcTextureData *tex, u32 out_w,
+                    u32 out_h, f32 dpr);
 void wc_render_frame(WcRenderer *r, const WcWorld *world, const WcFrameInput *in, const WcEntityGeometry *ents,
                      u32 out_w, u32 out_h);
 void wc_render_invalidate_history(WcRenderer *r);
+// where the text ui's ucols x urows grid sits, in logical px: its top-left and one cell
+void wc_ui_placement(const WcAsciiGrid *g, u32 ucols, u32 urows, f32 dpr, f32 *ox, f32 *oy, f32 *cw, f32 *ch);
+// writes ascii_<tag>_{ldr,glyph,back,prev}.rgba (tightly packed rgba8) a frame or two later
+void wc_render_request_dump(WcRenderer *r, u32 tag);
 // false while wasm is still compiling the core pipelines; frames until then only clear
 b32 wc_render_ready(WcRenderer *r);
 // times the next pass when gpu_timing is on; pair with wc_render_timer_end after gpu_end_pass

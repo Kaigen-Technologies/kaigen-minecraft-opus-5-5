@@ -28,6 +28,7 @@ layout(binding = 0) uniform _Frame {
     vec4 weather;      // rain, wetness, wind, volumetrics
     vec4 sky;          // sun illuminance, moon illuminance, night glow, night
     vec4 extra;        // snow fraction, snow cover, lightning flash, debug view
+    vec4 ascii;        // character cell size in scene px (x, y), grid cols, rows
 } F;
 
 float ign_t(vec2 p) { return ign(p + float(int(F.cam_delta.w) % 64) * vec2(5.588238)); }

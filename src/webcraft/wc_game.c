@@ -7,7 +7,7 @@
 #include "generated/types_app.gen.h"
 
 const HzAppConfig hz_app_config = {
-    .window_title = "WebCraft",
+    .window_title = "ASCIICRAFT",
     .window_width = 1280,
     .window_height = 720,
     // uncapped: the stats panel shows the real frame rate (the browser build stays at the display's refresh)
@@ -390,7 +390,7 @@ hz_internal void wc_update_debug_text(WcGame *g) {
   const char *facing = WC_COMPASS[((u32)(yaw_deg / 45.0f + 0.5f)) % WC_COMPASS_POINTS];
   TempAllocator tmp = tctx_temp_allocator_begin(NULL);
   StringBuilder sb = sb_create(1024, &tmp.allocator);
-  sb_append_format(&sb, "WebCraft  % fps  cpu % ms (max %)\n", fmt_u32((u32)(g->fps + 0.5f)), fmt_f32_p(g->cpu_ms, 1),
+  sb_append_format(&sb, "ASCIICRAFT  % fps  cpu % ms (max %)\n", fmt_u32((u32)(g->fps + 0.5f)), fmt_f32_p(g->cpu_ms, 1),
                    fmt_f32_p(g->cpu_max, 1));
   sb_append_format(&sb, "XYZ: % / % / %\n", fmt_f64_p(p->pos.x, 2), fmt_f64_p(p->pos.y, 2), fmt_f64_p(p->pos.z, 2));
   sb_append_format(&sb, "Block: % % %  Chunk: % %\n", fmt_i32(bx), fmt_i32(by), fmt_i32(bz), fmt_i32(bx >> 4),
@@ -454,6 +454,9 @@ hz_internal void wc_game_update(WcGame *g, AppMemory *memory) {
   u64 cpu0 = os_time_now();
   f32 dt = m_clampf(memory->dt, 0.0001f, 0.1f);
   g->elapsed += dt;
+  g->canvas_w = memory->canvas_width;
+  g->canvas_h = memory->canvas_height;
+  g->dpr = memory->dpr;
   input_update(&g->input, &memory->input_events, memory->total_time);
   g->input_now = memory->total_time;
   g->fps_frames++;
@@ -498,8 +501,7 @@ hz_internal void wc_game_update(WcGame *g, AppMemory *memory) {
     i32 y = WC_HEIGHT - 1;
     while (y > 0 && !wc_solid[wc_world_block(&g->world, bx, y, bz)] && wc_world_block(&g->world, bx, y, bz) != B_WATER)
       y--;
-    p->pos.y = y + 1 + g->pending_above;
-    g->has_pending_above = false;
+    p->pos.y = y + 1 + g->pending_above;    g->has_pending_above = false;
     wc_render_invalidate_history(&g->renderer);
   }
 
@@ -597,16 +599,22 @@ hz_internal void wc_game_render(WcGame *g, AppMemory *memory) {
       .dpr = memory->dpr,
   };
   // the swapchain is the logical canvas at the effective dpr
-  wc_render_frame(&g->renderer, &g->world, &in, &ents, (u32)(memory->canvas_width * memory->dpr),
-                  (u32)(memory->canvas_height * memory->dpr));
+  u32 out_w = (u32)(memory->canvas_width * memory->dpr), out_h = (u32)(memory->canvas_height * memory->dpr);
+  // the ui lays out first, on the grid this frame renders, so its cells ship with the frame
+  WcAsciiGrid grid = wc_ascii_grid(out_w, out_h, memory->dpr, wc_ascii_text_css(g->settings.text_size));
+  f32 ox, oy, cw, ch;
+  wc_ui_placement(&grid, grid.ucols, grid.urows, memory->dpr, &ox, &oy, &cw, &ch);
+  // a locked mouse has no pointer; touch play hit-tests its own buttons
+  b32 pointer = g->mode != WC_MODE_PLAYING || g->touch_mode;
+  wc_tui_begin(&g->tui, grid.ucols, grid.urows, ox, oy, cw, ch, &g->input, pointer);
+  // the atlas test owns the whole screen
+  if (!g->renderer.atlas_test) wc_ui_frame(g);
+  in.ui_cells = g->tui.cells;
+  in.ui_cols = grid.ucols;
+  in.ui_rows = grid.urows;
+  wc_render_frame(&g->renderer, &g->world, &in, &ents, out_w, out_h);
   if (g->world_created) wc_world_clear_mesh_changes(&g->world);
   wc_audio_update(&g->audio, dt, g->settings.volume, g->rain, g->eye_sky);
-
-  ui_begin_frame(g->ui, &g->input, dt);
-  wc_ui_frame(g, dt);
-  wc_render_timer_begin(&g->renderer, WC_GPU_UI);
-  ui_end_frame(g->ui);
-  wc_render_timer_end(&g->renderer);
   os_set_cursor(g->mode == WC_MODE_PLAYING ? OS_CURSOR_ARROW : g->cursor);
 
   if (g->screenshot_requested) {
@@ -635,7 +643,7 @@ hz_internal b32 wc_arg_f32(CString args, const char *key, f32 *out) {
   return false;
 }
 
-// wc_view:x=.. y=.. z=.. yaw=.. pitch=.. time=.. fly=1 debug=n rain=.. snow=.. flash=.. above=.. scale=..
+// wc_view:x=.. y=.. z=.. yaw=.. pitch=.. time=.. fly=1 debug=n rain=.. snow=.. flash=.. above=.. scale=.. palette=.. tint=.. glow=..
 hz_internal void wc_cmd_view(const HzCommandCtx *ctx, void *user) {
   WcGame *g = user;
   WcPlayer *p = &g->player;
@@ -653,7 +661,26 @@ hz_internal void wc_cmd_view(const HzCommandCtx *ctx, void *user) {
     g->auto_quality = false;
     wc_game_apply_settings(g);
   }
+  b32 look = false;
+  if (wc_arg_f32(ctx->args, "palette", &v)) {
+    g->settings.ascii_palette = (u32)m_clampf(v, 0, WC_PALETTES - 1);
+    look = true;
+  }
+  if (wc_arg_f32(ctx->args, "tint", &v)) {
+    g->settings.ascii_tint = (u32)m_clampf(v, 0, WC_TINTS - 1);
+    look = true;
+  }
+  if (wc_arg_f32(ctx->args, "text", &v)) {
+    g->settings.text_size = (u32)m_clampf(v, 0, WC_TEXT_SIZES - 1);
+    look = true;
+  }
+  if (wc_arg_f32(ctx->args, "glow", &v)) {
+    g->settings.ascii_glow = v > 0.5f;
+    look = true;
+  }
+  if (look) wc_game_apply_settings(g);
   if (wc_arg_f32(ctx->args, "debug", &v)) g->renderer.debug_view = (u32)v;
+  if (wc_arg_f32(ctx->args, "atlas", &v)) g->renderer.atlas_test = v > 0.5f;
   if (wc_arg_f32(ctx->args, "above", &v)) {
     g->pending_above = v;
     g->has_pending_above = true;
@@ -679,6 +706,46 @@ hz_internal void wc_cmd_view(const HzCommandCtx *ctx, void *user) {
   wc_render_invalidate_history(&g->renderer);
 }
 
+// wc_find:<biome name>: moves the player to the nearest column deep inside that biome (shot list and visual checks)
+hz_internal void wc_cmd_find(const HzCommandCtx *ctx, void *user) {
+  WcGame *g = user;
+  WcPlayer *p = &g->player;
+  u32 want = WC_BIOME_COUNT;
+  for (u32 i = 0; i < WC_BIOME_COUNT; i++)
+    if (ctx->args && cstr_equal_ci(ctx->args, wc_biome_name[i])) want = i;
+  if (want == WC_BIOME_COUNT) {
+    log_error("wc_find: unknown biome '%'", fmt_cstr(ctx->args ? ctx->args : ""));
+    return;
+  }
+  const WcTerrain *T = &g->world.terrain;
+  i32 x0 = wc_floor_i(p->pos.x), z0 = wc_floor_i(p->pos.z);
+  // square rings 16 blocks apart; a hit needs the 8 columns 32 blocks around it in the biome too
+  for (i32 r = 0; r <= 256; r++) {
+    for (i32 k = -r; k <= r; k++) {
+      for (i32 side = 0; side < 4; side++) {
+        i32 dx = side == 0 ? k : side == 1 ? k : side == 2 ? -r : r;
+        i32 dz = side == 0 ? -r : side == 1 ? r : k;
+        if (side >= 2 && (k == -r || k == r)) continue;
+        i32 x = x0 + dx * 16, z = z0 + dz * 16;
+        if (wc_sample_column(T, x, z).biome != want) continue;
+        b32 inside = true;
+        for (i32 j = 0; j < 9 && inside; j++)
+          inside = wc_sample_column(T, x + (j % 3 - 1) * 32, z + (j / 3 - 1) * 32).biome == want;
+        if (!inside) continue;
+        p->pos.x = (f32)x + 0.5f;
+        p->pos.z = (f32)z + 0.5f;
+        g->pending_above = 3;
+        g->has_pending_above = true;
+        p->vel = (v3){0, 0, 0};
+        wc_render_invalidate_history(&g->renderer);
+        log_info("wc_find: % at % %", fmt_cstr(wc_biome_name[want]), fmt_i32(x), fmt_i32(z));
+        return;
+      }
+    }
+  }
+  log_error("wc_find: no % within 4096 blocks", fmt_cstr(wc_biome_name[want]));
+}
+
 // wc_seed:<n>: fresh world from a fixed seed
 hz_internal void wc_cmd_seed(const HzCommandCtx *ctx, void *user) {
   WcGame *g = user;
@@ -701,6 +768,23 @@ hz_internal void wc_cmd_hud(const HzCommandCtx *ctx, void *user) {
   g->hide_hud = ctx->args && ctx->args[0] == '0';
 }
 
+// wc_grid: logs the character grid (atlas test and cpu reference input)
+hz_internal void wc_cmd_grid(const HzCommandCtx *ctx, void *user) {
+  UNUSED(ctx);
+  WcGame *g = user;
+  const WcAsciiGrid *gr = &g->renderer.grid;
+  log_info("wc_grid k=% cols=% rows=% ox=% oy=% m=% ucols=% urows=%", fmt_u32(gr->k), fmt_u32(gr->cols),
+           fmt_u32(gr->rows), fmt_u32(gr->ox), fmt_u32(gr->oy), fmt_u32(gr->m), fmt_u32(gr->ucols), fmt_u32(gr->urows));
+}
+
+// wc_dump:<tag>: writes one frame's ascii targets for tools/ascii/reference.py
+hz_internal void wc_cmd_dump(const HzCommandCtx *ctx, void *user) {
+  WcGame *g = user;
+  f64 v = 0;
+  if (!cstr_to_f64(ctx->args, &v)) v = 0;
+  wc_render_request_dump(&g->renderer, (u32)v);
+}
+
 // wc_play: enter play without grabbing the mouse (scripted runs)
 hz_internal void wc_cmd_play(const HzCommandCtx *ctx, void *user) {
   UNUSED(ctx);
@@ -709,7 +793,7 @@ hz_internal void wc_cmd_play(const HzCommandCtx *ctx, void *user) {
   if (g->started) g->mode = WC_MODE_PLAYING;
 }
 
-// wc_mode:menu|settings|inventory|paused
+// wc_mode:menu|settings|inventory|paused|error
 hz_internal void wc_cmd_mode(const HzCommandCtx *ctx, void *user) {
   WcGame *g = user;
   String a = cstr_to_str(ctx->args);
@@ -719,6 +803,9 @@ hz_internal void wc_cmd_mode(const HzCommandCtx *ctx, void *user) {
   else if (str_equal(a, STR_FROM_CSTR("settings"))) {
     g->settings_return = WC_MODE_MENU;
     g->mode = WC_MODE_SETTINGS;
+  } else if (str_equal(a, STR_FROM_CSTR("error"))) {
+    g->error_text = "The graphics device was lost (scripted test). Reload the page to start ASCIICRAFT again.";
+    g->mode = WC_MODE_ERROR;
   }
 }
 
@@ -744,61 +831,36 @@ hz_internal void wc_cmd_setblock(const HzCommandCtx *ctx, void *user) {
     wc_world_set_block(&g->world, (i32)x, (i32)y, (i32)z, (u8)id, true);
 }
 
-// css radial-gradient(ellipse at center, rgba(0,0,0,.25), rgba(0,0,0,.6)), stretched over the screen
-hz_internal GpuTexture wc_make_scrim(void) {
-  const u32 n = 128;
-  TempAllocator tmp = tctx_temp_allocator_begin(NULL);
-  u8 *px = ALLOC_ARRAY(&tmp.allocator, u8, n * n * 4);
-  for (u32 y = 0; y < n; y++) {
-    for (u32 x = 0; x < n; x++) {
-      f32 u = ((x + 0.5f) / n - 0.5f) * 2.0f, v = ((y + 0.5f) / n - 0.5f) * 2.0f;
-      f32 t = m_minf(1.0f, m_sqrtf(u * u + v * v) / m_sqrtf(2.0f));
-      px[(y * n + x) * 4 + 3] = (u8)((0.25f + (0.6f - 0.25f) * t) * 255.0f + 0.5f);
-    }
-  }
-  GpuTexture tex = gpu_make_texture(&(GpuTextureDesc){
-      .data = px, .size = n * n * 4, .data_type = GPU_TEXTURE_DATA_RGBA8, .width = n, .height = n});
-  tctx_temp_allocator_end(tmp);
-  return tex;
-}
-
 // ---- entry points ----
 
 HZ_APP_API void app_init(AppMemory *memory) {
   WcGame *g = memory->state;
   if (is_main_thread()) {
-    // render at 1 device px per logical px on every display
-    hz_set_max_dpr(1.0f);
+    // the character grid lands on device px: font pixels are whole device px at any dpr
+    hz_set_max_dpr(0.0f);
     wc_render_create_pipelines(&g->renderer);
     // compiles start now, not when init returns: the rest of init overlaps them
     gpu_flush();
     g->arena = arena_create(GB(1), MB(1));
     g->alloc = make_arena_allocator(g->arena);
     wc_textures_alloc(&g->tex, &g->alloc);
-    Allocator icon_ta = tctx_temp_allocator(NULL);
-    g->icon_pixels = ALLOC_ARRAY_NO_ZERO(&icon_ta, u8, B_COUNT * WC_ICON_SIZE * WC_ICON_SIZE * 4);
   }
   lane_sync();
   wc_textures_generate(&g->tex);
-  lane_sync();
-  wc_icons_raster(g->icon_pixels, &g->tex, WC_ICON_SIZE);
   lane_sync();
   if (!is_main_thread()) return;
 
   Allocator *a = &g->alloc;
   g->input = input_init();
-  g->assets = asset_system_create(NULL);
-  g->ui = ui_create(NULL, g->assets);
+  wc_tui_init(&g->tui, a);
   g->rng = random_create_type(RANDOM_PCG32, os_time_unix_ms());
   wc_settings_defaults(&g->settings);
   g->renderer.settings = wc_settings_render(&g->settings);
   g->renderer.gpu_timing = true;
   wc_render_init(&g->renderer, a, &g->tex, (u32)(memory->canvas_width * memory->dpr),
                  (u32)(memory->canvas_height * memory->dpr), memory->dpr);
-  g->icons = ALLOC_ARRAY(a, GpuTexture, WC_BLOCK_IDS);
-  wc_icons_upload(g->icons, g->icon_pixels, WC_ICON_SIZE);
-  g->icon_pixels = NULL;
-  g->scrim = wc_make_scrim();
+  g->icons = ALLOC_ARRAY(a, WcIcon, WC_BLOCK_IDS);
+  wc_icons_build(g->icons, &g->tex, g->renderer.tables);
   wc_entities_init(&g->ents, a, os_time_unix_ms());
   wc_audio_init(&g->audio, a);
   wc_edits_init(&g->edits);
@@ -810,9 +872,6 @@ HZ_APP_API void app_init(AppMemory *memory) {
   g->debug_text = ALLOC_ARRAY(a, char, 1024);
   g->water_q = ALLOC_ARRAY(a, WcWaterCell, WC_WATER_QUEUE_MAX);
   g->perf_samples = ALLOC_ARRAY(a, f32, WC_PERF_SAMPLES);
-  g->sliders = ALLOC_ARRAY(a, UIInteract_Slider, WC_SETTINGS_SLIDERS);
-  g->dropdowns = ALLOC_ARRAY(a, UIInteract_Dropdown, WC_SETTINGS_DROPDOWNS);
-  g->button_anims = ALLOC_ARRAY(a, UIInteractAnim, WC_UI_BUTTONS);
   wc_player_init(&g->player);
   g->player.sensitivity = 0.0022f * g->settings.sensitivity;
   g->day_time = 0.08f;
@@ -830,14 +889,15 @@ HZ_APP_API void app_init(AppMemory *memory) {
   hz_command_register("wc_preset", wc_cmd_preset, g);
   hz_command_register("wc_setblock", wc_cmd_setblock, g);
   hz_command_register("wc_seed", wc_cmd_seed, g);
+  hz_command_register("wc_find", wc_cmd_find, g);
   hz_command_register("wc_hud", wc_cmd_hud, g);
+  hz_command_register("wc_grid", wc_cmd_grid, g);
+  hz_command_register("wc_dump", wc_cmd_dump, g);
+  wc_ui_register_commands(g);
 }
 
 HZ_APP_API void app_update_and_render(AppMemory *memory) {
   WcGame *g = memory->state;
-  // collective: every lane participates
-  asset_system_update(g->assets);
-  ui_font_update(g->ui);
   b32 main = is_main_thread();
   if (main) {
     wc_frame_begin(g);

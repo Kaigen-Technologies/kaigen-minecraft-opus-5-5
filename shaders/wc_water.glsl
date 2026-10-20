@@ -71,6 +71,7 @@ layout(location = 5) flat in uint v_flags;
 layout(location = 6) flat in uint v_face;
 layout(location = 7) flat in uint v_layer;
 layout(location = 0) out vec4 frag_color;
+layout(location = 1) out vec4 o_liquid; // 1 water, 2 ice (/ 255), world-anchored u, v (1/256 steps), face
 
 float scene_depth_at(vec2 uv) { return texelFetch(sampler2D(scene_depth_tex, smp_clamp), uv_to_texel(uv), 0).r; }
 
@@ -235,5 +236,7 @@ void main() {
         color = mix(body + diffuse, refl, fres) + specular_ggx(N, V, L, 0.12, vec3(0.02)) * F.light_color.rgb * sh * saturate(dot(N, L));
     }
     frag_color = vec4(color, 1.0);
+    vec2 q = min(floor(clamp(v_uv, 0.0, 1.0) * 256.0), vec2(255.0));
+    o_liquid = vec4(float(is_water ? 1 : 2) / 255.0, q / 255.0, float(v_face + (below ? 8u : 0u)) / 255.0);
 }
 @end

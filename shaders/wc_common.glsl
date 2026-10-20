@@ -6,6 +6,7 @@
 @ctype float f32
 @ctype int i32
 @ctype uint u32
+@ctype uvec4 uvec4
 
 #define PI 3.14159265359
 #define saturate(a) clamp(a, 0.0, 1.0)

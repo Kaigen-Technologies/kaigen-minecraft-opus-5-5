@@ -1,4 +1,6 @@
 // deferred lighting: sun/moon with pcss shadows, subsurface, sky ambient, glossy ssr, rain, snow, caustics
+// sky fill light scaled down: ascii ink density needs lit and shaded faces far apart
+#define ASCII_AMBIENT 0.55
 #include "wc_common.glsl"
 #include "wc_frame.glsl"
 
@@ -38,6 +40,7 @@ layout(set = 1, binding = 18) uniform samplerShadow smp_shadow;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 frag_color;
+layout(location = 1) out vec4 o_liquid; // cleared here, marked by the water pass
 
 float depth_at(vec2 uv) { return texelFetch(sampler2D(depth_tex, smp_clamp), uv_to_texel(uv), 0).r; }
 
@@ -196,6 +199,7 @@ float ssao_at(ivec2 q, float lin, vec3 ng) {
 }
 
 void main() {
+    o_liquid = vec4(0.0);
     vec2 uv = v_uv;
     ivec2 px = ivec2(gl_FragCoord.xy);
     float depth = texelFetch(sampler2D(depth_tex, smp_clamp), px, 0).r;
@@ -301,7 +305,7 @@ void main() {
     float sky_f = sky_curve(sky_l);
     vec3 ambient_n = plant ? mix(ambient_cube(N), ambient_cube(vec3(0.0, 1.0, 0.0)), 0.5) : ambient_cube(N);
     vec3 under_tint = water_depth > 0.0 ? mix(vec3(1.0), vec3(0.45, 0.75, 0.85), saturate(water_depth * 0.3)) : vec3(1.0);
-    vec3 amb_diffuse = diffuse_color * ambient_n * sky_f * occ * under_tint;
+    vec3 amb_diffuse = diffuse_color * ambient_n * sky_f * occ * under_tint * ASCII_AMBIENT;
     // specular ambient (sky reflection)
     vec3 R = reflect(-V, N);
     float spec_occ = saturate(pow(NoV + occ, exp2(-16.0 * roughness - 1.0)) - 1.0 + occ);

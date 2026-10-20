@@ -17,6 +17,7 @@ layout(location = 0) out vec4 o_albedo;
 layout(location = 1) out vec4 o_normal;
 layout(location = 2) out vec4 o_light;
 layout(location = 3) out vec4 o_spec;
+layout(location = 4) out vec4 o_mat;  // texture layer + 1, face u, face v (1/256 steps), face | 128 for the held item
 
 float vnoise(vec2 p) {
     vec2 i = floor(p);
@@ -31,21 +32,23 @@ float vnoise(vec2 p) {
 
 void main() {
     vec3 uvl = vec3(v_uv, float(v_layer));
-    // pixel-exact texels when magnified (crisp pixel art), trilinear when minified
+    // filtered over a character cell, not a pixel: no texture detail smaller than a cell reaches the glyph matcher
     vec2 gx = dFdx(v_uv);
     vec2 gy = dFdy(v_uv);
-    float lod = 0.5 * log2(max(dot(gx, gx), dot(gy, gy)) * 256.0);
+    vec2 cgx = gx * F.ascii.x;
+    vec2 cgy = gy * F.ascii.y;
+    float lod = 0.5 * log2(max(dot(cgx, cgx), dot(cgy, cgy)) * 256.0);
     bool magnified = lod < -0.25;
     ivec3 tc = ivec3(clamp(ivec2(floor(v_uv * 16.0)), ivec2(0), ivec2(15)), int(v_layer));
     vec4 alb = magnified ? texelFetch(sampler2DArray(albedo_tex, smp_block), tc, 0)
-                         : textureGrad(sampler2DArray(albedo_tex, smp_block), uvl, gx, gy);
+                         : textureGrad(sampler2DArray(albedo_tex, smp_block), uvl, cgx, cgy);
     bool cutout = (v_flags & 1u) != 0u;
     if (cutout && alb.a < 0.5) discard;
     vec3 albedo = cutout ? alb.rgb * v_tint : alb.rgb * mix(vec3(1.0), v_tint, alb.a);
     vec4 nt = magnified ? texelFetch(sampler2DArray(normal_tex, smp_block), tc, 0)
-                        : textureGrad(sampler2DArray(normal_tex, smp_block), uvl, gx, gy);
+                        : textureGrad(sampler2DArray(normal_tex, smp_block), uvl, cgx, cgy);
     vec4 sp = magnified ? texelFetch(sampler2DArray(spec_tex, smp_block), tc, 0)
-                        : textureGrad(sampler2DArray(spec_tex, smp_block), uvl, gx, gy);
+                        : textureGrad(sampler2DArray(spec_tex, smp_block), uvl, cgx, cgy);
     vec3 fn, ft, fb;
     face_basis(v_face, fn, ft, fb);
     vec3 ng = WC_NORMAL_ROT(fn);
@@ -73,4 +76,6 @@ void main() {
     o_normal = vec4(oct_encode(n), oct_encode(ng));
     o_light = vec4(v_light_ao, float(mat_flags) / 255.0);
     o_spec = sp;
+    vec2 q = min(floor(clamp(v_uv, 0.0, 1.0) * 256.0), vec2(255.0));
+    o_mat = vec4(float(v_layer + 1u) / 255.0, q / 255.0, float(v_face | (v_flags & 128u)) / 255.0);
 }

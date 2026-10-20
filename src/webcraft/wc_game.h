@@ -5,8 +5,8 @@
 #include "webcraft/wc_settings.h"
 #include "lib/random.h"
 #include "audio.h"
-#include "assets/assets.h"
-#include "ui/ui.h"
+#include "input.h"
+#include "webcraft/wc_tui.h"
 
 // ---- player ----
 
@@ -181,10 +181,18 @@ void wc_audio_thunder(WcAudio *a, f32 delay, f32 strength);
 
 // ---- block icons for the hud and inventory ----
 
-// every lane: its share of the isometric block icons, into pixels (B_COUNT icons of size^2 srgb rgba8)
-void wc_icons_raster(u8 *pixels, const WcTextureData *tex, u32 size);
-// main lane: one icon texture per block id from the rasterised pixels (invalid for air)
-void wc_icons_upload(GpuTexture *out, u8 *pixels, u32 size);
+#define WC_ICON_W 3
+#define WC_ICON_H 2
+
+// a block as text: WC_ICON_W x WC_ICON_H cells, the top face's row over the side face's (row-major)
+typedef struct {
+  u8 glyph[WC_ICON_W * WC_ICON_H];
+  u32 colour[WC_ICON_W * WC_ICON_H]; // ink, 0xRRGGBB
+  u32 back[WC_ICON_W * WC_ICON_H];   // background, 0xRRGGBB; the block's colour carries the cell as in the scene
+} WcIcon;
+
+// every block id's icon (air left empty), from the texture pixels through the fill ramp of t
+void wc_icons_build(WcIcon *out, const WcTextureData *tex, const WcAsciiTables *t);
 
 // ---- settings ----
 
@@ -217,35 +225,12 @@ typedef struct {
 #define WC_WATER_QUEUE_MAX 400
 #define WC_PERF_SAMPLES 150
 #define WC_TOAST_MAX 96
-#define WC_SETTINGS_SLIDERS 9
-#define WC_SETTINGS_DROPDOWNS 4
-#define WC_UI_BUTTONS 8
-
-typedef enum {
-  WC_SLIDER_RENDER_DISTANCE,
-  WC_SLIDER_RENDER_SCALE,
-  WC_SLIDER_SHADOW_DISTANCE,
-  WC_SLIDER_FOV,
-  WC_SLIDER_SENSITIVITY,
-  WC_SLIDER_VOLUME,
-  WC_SLIDER_DAY_LENGTH,
-  WC_SLIDER_CLOUD_COVERAGE,
-  WC_SLIDER_TIME_OF_DAY,
-} WcSliderId;
-
-typedef enum {
-  WC_DROPDOWN_PRESET,
-  WC_DROPDOWN_SHADOW_RES,
-  WC_DROPDOWN_CLOUDS,
-  WC_DROPDOWN_WEATHER,
-} WcDropdownId;
 
 typedef struct {
   ArenaAllocator *arena;
   Allocator alloc;
-  AssetSystem *assets;
-  UISystem *ui;
   InputSystem input;
+  WcTui tui;
 
   WcTextureData tex;
   WcEditStore edits;
@@ -254,9 +239,7 @@ typedef struct {
   WcRenderer renderer;
   WcEntities ents;
   WcAudio audio;
-  GpuTexture *icons; // per block id
-  u8 *icon_pixels;   // app_init only: rasterised icons awaiting upload, on main's temp arena
-  GpuTexture scrim;  // screen backdrop vignette
+  WcIcon *icons; // per block id
   b32 world_created;
 
   u32 seed;
@@ -305,15 +288,13 @@ typedef struct {
   u32 cpu_frames;
   b32 has_pending_above;
   f32 pending_above;
-  char *error_text;
+  const char *error_text;
   char *debug_text;
 
   // retained ui state
-  UIInteract_Slider *sliders;
-  UIInteract_Dropdown *dropdowns;
-  UIInteractAnim *button_anims;
-  UIInteract_Modal new_world_modal;
-  u32 inv_hover;
+  b32 new_world_open;
+  i32 settings_scroll; // first settings row shown
+  f32 canvas_w, canvas_h, dpr; // this frame's logical canvas and device px per logical px
   OsCursor cursor;
   b32 test_play; // scripted runs play without grabbing the mouse
   WcTouch touch;
@@ -345,7 +326,9 @@ void wc_game_select(WcGame *g, u32 slot);
 // clock text for a 0..1 day time (0 = 06:00)
 String wc_clock_string(f32 day_time, Allocator *alloc);
 
-// ui for every screen plus the hud; main lane, between ui_begin_frame and ui_end_frame
-void wc_ui_frame(WcGame *g, f32 dt);
+// the text-mode ui for every screen plus the hud, into g->tui; main lane, before the frame renders
+void wc_ui_frame(WcGame *g);
+// registers wc_ui_move_to: puts the pointer on a widget by name ("PlayBtn", "HotbarSlot#3")
+void wc_ui_register_commands(WcGame *g);
 
 #endif

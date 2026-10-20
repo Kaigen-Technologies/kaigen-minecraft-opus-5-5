@@ -19,15 +19,18 @@
 #include "shaders/wc_bloom_down.h"
 #include "shaders/wc_bloom_up.h"
 #include "shaders/wc_exposure.h"
-#include "shaders/wc_final.h"
+#include "shaders/wc_tonemap.h"
+#include "shaders/wc_ascii_cells.h"
+#include "shaders/wc_ascii_compose.h"
 #include "shaders/wc_noise_base.h"
 #include "shaders/wc_noise_detail.h"
 #include "shaders/wc_noise_weather.h"
 #include "shaders/wc_noise_down3d.h"
 #include "shaders/wc_noise_down2d.h"
 
-static_assert(sizeof(WcFrameUniforms) == 1024, "WcFrameUniforms must mirror _Frame");
+static_assert(sizeof(WcFrameUniforms) == 1040, "WcFrameUniforms must mirror _Frame");
 static_assert(sizeof(WcFrameUniforms) == sizeof(ShaderWcTerrainFrame), "WcFrameUniforms must mirror _Frame");
+static_assert(sizeof(WcAsciiTables) == sizeof(ShaderWcAsciiCellsCellTables), "WcAsciiTables must mirror _CellTables");
 
 #define WC_SUN_ILLUM 12.0f
 #define WC_MOON_ILLUM (WC_SUN_ILLUM * 0.0045f)
@@ -39,6 +42,14 @@ static_assert(sizeof(WcFrameUniforms) == sizeof(ShaderWcTerrainFrame), "WcFrameU
 #define WC_TILT 0.42f
 #define WC_SHADOW_EXTRA 220.0f
 #define WC_CASCADE_MARGIN 0.15f // fraction of a cascade's reach the camera may move before it re-renders
+#define WC_FILL_LO 12u          // cell mean display luma (0..255) at and below which a cell is empty
+#define WC_FILL_HI 150u         // cell mean display luma that reaches the densest glyph
+#define WC_FILL_CURVE 1.0f      // ramp exponent between them
+#define WC_INK_GAIN 2.5f        // glyph colour over the cell mean, bounded so no channel clips
+#define WC_RAMP_HYSTERESIS 1u   // ramp steps a cell's last glyph may drift before it changes
+#define WC_ASCII_SATURATION 1.3f // glyphs are thin: hue has to carry the material
+#define WC_ASCII_CONTRAST 1.85f   // agx look power: ink density only separates what the tonemap separates
+#define WC_MAX_EXPOSURE 64.0f    // night and caves still reach the ramp: glyph density is the only channel for shape
 #define WC_CASCADE_CACHED 2     // cascades from this one on are cached; nearer ones carry animated foliage
 #define WC_MAX_DRAW_QUADS (WC_MAX_SECTION_QUADS * WC_SECTIONS)
 #define WC_HDR GPU_TEXTURE_FORMAT_RGBA16F
@@ -60,6 +71,9 @@ typedef struct {
   v4 *p;
   u32 n;
 } WcFrustum;
+
+force_inline GpuTexture wc_color(GpuRenderTarget rt, u32 i) { return gpu_get_render_target_attachment(rt, i); }
+force_inline GpuTexture wc_depth(GpuRenderTarget rt) { return gpu_get_render_target_depth(rt); }
 
 // ---- celestial mechanics and the cpu copy of the atmosphere transmittance ----
 
@@ -151,15 +165,18 @@ hz_internal GpuComputePipeline wc_compute_pipeline(const GpuComputePipelineDesc 
 }
 
 hz_internal void wc_gbuffer_formats(GpuPipelineDesc *d) {
-  d->color_attachment_count = 4;
+  d->color_attachment_count = 5;
   d->color_formats[0] = GPU_TEXTURE_FORMAT_RGBA8_SRGB;
   d->color_formats[1] = GPU_TEXTURE_FORMAT_RGBA16F;
   d->color_formats[2] = GPU_TEXTURE_FORMAT_RGBA8;
   d->color_formats[3] = GPU_TEXTURE_FORMAT_RGBA8;
+  d->color_formats[4] = GPU_TEXTURE_FORMAT_RGBA8;
 }
 
 void wc_render_create_pipelines(WcRenderer *r) {
-  // the core tier first: async compiles start in creation order
+  // compose first, alone it draws the ui (the loading screen), then the core tier: async compiles start in order
+  r->ascii_compose =
+      wc_fullscreen_pipeline(shader_wc_ascii_compose_pipeline_desc(), GPU_TEXTURE_FORMAT_RGBA8, WC_TARGET_SWAPCHAIN, false);
   r->transmittance = wc_fullscreen_pipeline(shader_wc_transmittance_pipeline_desc(), WC_HDR, WC_TARGET_COLOR, false);
   r->multiscatter = wc_fullscreen_pipeline(shader_wc_multiscatter_pipeline_desc(), WC_HDR, WC_TARGET_COLOR, false);
   r->skyview = wc_fullscreen_pipeline(shader_wc_skyview_pipeline_desc(), WC_HDR, WC_TARGET_COLOR, false);
@@ -195,11 +212,22 @@ void wc_render_create_pipelines(WcRenderer *r) {
   d.compile_async = true;
   r->shadow_clear = gpu_make_pipeline(&d);
 
-  r->deferred = wc_fullscreen_pipeline(shader_wc_deferred_pipeline_desc(), WC_HDR, WC_TARGET_COLOR, false);
+  // the deferred pass also clears the liquid target the water pass marks
+  d = *shader_wc_deferred_pipeline_desc();
+  d.compile_async = true;
+  d.cull_mode = GPU_CULL_NONE;
+  d.depth_test = false;
+  d.depth_write = false;
+  d.no_depth = true;
+  d.color_attachment_count = 2;
+  d.color_formats[0] = WC_HDR;
+  d.color_formats[1] = GPU_TEXTURE_FORMAT_RGBA8;
+  r->deferred = gpu_make_pipeline(&d);
 
   d = *shader_wc_water_pipeline_desc();
-  d.color_attachment_count = 1;
+  d.color_attachment_count = 2;
   d.color_formats[0] = WC_HDR;
+  d.color_formats[1] = GPU_TEXTURE_FORMAT_RGBA8;
   d.cull_mode = GPU_CULL_NONE;
   d.depth_test = true;
   d.depth_write = true;
@@ -225,7 +253,18 @@ void wc_render_create_pipelines(WcRenderer *r) {
   r->bloom_down = wc_fullscreen_pipeline(shader_wc_bloom_down_pipeline_desc(), WC_BLOOM_FORMAT, WC_TARGET_COLOR, false);
   r->bloom_up = wc_fullscreen_pipeline(shader_wc_bloom_up_pipeline_desc(), WC_BLOOM_FORMAT, WC_TARGET_COLOR, true);
   r->exposure = wc_fullscreen_pipeline(shader_wc_exposure_pipeline_desc(), GPU_TEXTURE_FORMAT_RGBA32F, WC_TARGET_COLOR, false);
-  r->final = wc_fullscreen_pipeline(shader_wc_final_pipeline_desc(), GPU_TEXTURE_FORMAT_RGBA8, WC_TARGET_SWAPCHAIN, false);
+  r->tonemap = wc_fullscreen_pipeline(shader_wc_tonemap_pipeline_desc(), GPU_TEXTURE_FORMAT_RGBA8, WC_TARGET_COLOR, false);
+  d = *shader_wc_ascii_cells_pipeline_desc();
+  d.compile_async = true;
+  d.cull_mode = GPU_CULL_NONE;
+  d.depth_test = false;
+  d.depth_write = false;
+  d.no_depth = true;
+  d.color_attachment_count = 3;
+  d.color_formats[0] = GPU_TEXTURE_FORMAT_RGBA8;
+  d.color_formats[1] = GPU_TEXTURE_FORMAT_RGBA8;
+  d.color_formats[2] = GPU_TEXTURE_FORMAT_RGBA8;
+  r->ascii_cells = gpu_make_pipeline(&d);
 
   // effects: each renders as switched off until its own pipelines land
   r->ssao = wc_fullscreen_pipeline(shader_wc_ssao_pipeline_desc(), WC_HDR, WC_TARGET_COLOR, false);
@@ -322,13 +361,15 @@ hz_internal void wc_create_targets(WcRenderer *r, u32 w, u32 h, u32 uw, u32 uh) 
       .name = "wc gbuffer",
       .width = w,
       .height = h,
-      .color_attachment_count = 4,
+      .color_attachment_count = 5,
       .formats = {GPU_TEXTURE_FORMAT_RGBA8_SRGB, GPU_TEXTURE_FORMAT_RGBA16F, GPU_TEXTURE_FORMAT_RGBA8,
-                  GPU_TEXTURE_FORMAT_RGBA8},
+                  GPU_TEXTURE_FORMAT_RGBA8, GPU_TEXTURE_FORMAT_RGBA8},
       .needs_depth = true,
   });
   // the scene renders with the g-buffer's depth (water tests and writes it): no depth of its own
-  r->scene = wc_rt("wc scene", w, h, WC_HDR, false);
+  r->scene = gpu_make_render_target(&(GpuRenderTargetDesc){
+      .name = "wc scene", .width = w, .height = h, .color_attachment_count = 2,
+      .formats = {WC_HDR, GPU_TEXTURE_FORMAT_RGBA8}});
   r->depth_copy = gpu_make_render_target(
       &(GpuRenderTargetDesc){.name = "wc depth copy", .width = w, .height = h, .depth_only = true});
   r->scene_copy = wc_rt("wc scene copy", w, h, WC_HDR, false);
@@ -351,18 +392,54 @@ hz_internal void wc_create_targets(WcRenderer *r, u32 w, u32 h, u32 uw, u32 uh) 
 
 hz_internal u32 wc_scaled(u32 v, f32 scale) { return (u32)m_maxf(1.0f, m_floorf(v * scale)); }
 
-// with taa on, a render scale below 1 upscales in the taa pass: history and bloom at the output size
-hz_internal void wc_upscale_size(const WcRenderSettings *s, u32 out_w, u32 out_h, f32 dpr, u32 w, u32 h, u32 *uw,
-                                 u32 *uh) {
+// one scene px per font px (times render_scale); taa upscales a scale below 1 back to grid resolution
+hz_internal void wc_scene_size(const WcRenderSettings *s, const WcAsciiGrid *g, u32 *w, u32 *h, u32 *uw, u32 *uh) {
+  u32 gw = g->cols * WC_CELL_W, gh = g->rows * WC_CELL_H;
+  *w = wc_scaled(gw, s->render_scale);
+  *h = wc_scaled(gh, s->render_scale);
   b32 up = s->taa && s->render_scale < 1.0f;
-  f32 os = dpr > WC_MAX_DPR ? WC_MAX_DPR / dpr : 1.0f;
-  *uw = up ? wc_scaled(out_w, os) : w;
-  *uh = up ? wc_scaled(out_h, os) : h;
+  *uw = up ? gw : *w;
+  *uh = up ? gh : *h;
 }
 
-// the 3d view renders at most WC_MAX_DPR device px per logical px
-hz_internal f32 wc_output_scale(const WcRenderSettings *s, f32 dpr) {
-  return dpr > WC_MAX_DPR ? s->render_scale * WC_MAX_DPR / dpr : s->render_scale;
+// the tonemapped scene at grid resolution and the cell targets; a new grid drops the hysteresis history
+hz_internal void wc_ensure_ascii(WcRenderer *r, const WcAsciiGrid *g) {
+  u32 gw = g->cols * WC_CELL_W, gh = g->rows * WC_CELL_H;
+  if (!handle_is_valid(r->ldr)) {
+    r->ldr = wc_rt("wc ascii ldr", gw, gh, GPU_TEXTURE_FORMAT_RGBA8, false);
+    for (u32 i = 0; i < 2; i++)
+      r->cells[i] = gpu_make_render_target(&(GpuRenderTargetDesc){
+          .name = "wc ascii cells", .width = g->cols, .height = g->rows, .color_attachment_count = 3,
+          .formats = {GPU_TEXTURE_FORMAT_RGBA8, GPU_TEXTURE_FORMAT_RGBA8, GPU_TEXTURE_FORMAT_RGBA8}});
+  } else if (r->grid.cols != g->cols || r->grid.rows != g->rows) {
+    gpu_resize_render_target(r->ldr, gw, gh);
+    for (u32 i = 0; i < 2; i++) gpu_resize_render_target(r->cells[i], g->cols, g->rows);
+  } else {
+    r->grid = *g;
+    return;
+  }
+  r->grid = *g;
+  r->cells_valid = false;
+  r->needs_prime = true;
+}
+
+// the text ui's cells, two rgba8 texels per cell; sized for the scene grid, which bounds every ui grid
+hz_internal void wc_ensure_ui(WcRenderer *r, const WcAsciiGrid *g) {
+  u32 w = g->cols * 2, h = g->rows;
+  if (handle_is_valid(r->ui_tex) && r->ui_w >= w && r->ui_h >= h) return;
+  if (handle_is_valid(r->ui_tex)) gpu_destroy_texture(r->ui_tex);
+  r->ui_w = w;
+  r->ui_h = h;
+  r->ui_tex = gpu_make_texture(&(GpuTextureDesc){.data_type = GPU_TEXTURE_DATA_RGBA8, .width = w, .height = h});
+}
+
+void wc_ui_placement(const WcAsciiGrid *g, u32 ucols, u32 urows, f32 dpr, f32 *ox, f32 *oy, f32 *cw, f32 *ch) {
+  f32 cell_w = (f32)(WC_CELL_W * g->k * g->m), cell_h = (f32)(WC_CELL_H * g->k * g->m);
+  f32 inv = 1.0f / m_maxf(dpr, 0.01f);
+  *ox = ((f32)g->ox + (f32)((g->cols - ucols * g->m) / 2 * WC_CELL_W * g->k)) * inv;
+  *oy = ((f32)g->oy + (f32)((g->rows - urows * g->m) / 2 * WC_CELL_H * g->k)) * inv;
+  *cw = cell_w * inv;
+  *ch = cell_h * inv;
 }
 
 hz_internal void wc_ensure_targets(WcRenderer *r, u32 w, u32 h, u32 uw, u32 uh) {
@@ -417,11 +494,25 @@ void wc_render_init(WcRenderer *r, Allocator *alloc, const WcTextureData *tex, u
   r->alloc = *alloc;
   r->timer_open = UINT32_MAX;
   // targets exist from init so wasm has realised them by the first frame
-  f32 scale = wc_output_scale(&r->settings, dpr);
-  u32 w = wc_scaled(out_w, scale), h = wc_scaled(out_h, scale), uw, uh;
-  wc_upscale_size(&r->settings, out_w, out_h, dpr, w, h, &uw, &uh);
+  WcAsciiGrid grid = wc_ascii_grid(out_w, out_h, dpr, wc_ascii_text_css(r->settings.text_size));
+  u32 w, h, uw, uh;
+  wc_scene_size(&r->settings, &grid, &w, &h, &uw, &uh);
   wc_create_targets(r, w, h, uw, uh);
+  wc_ensure_ascii(r, &grid);
   wc_ensure_shadow(r);
+  r->tables = ALLOC(alloc, WcAsciiTables);
+  // edge strokes are matched against a 1 px outline image, so stroke glyphs keep their true coverage
+  wc_ascii_build_tables(r->tables, WC_ASCII_VOCAB, WC_ASCII_CLOUD);
+  wc_ascii_build_ramp(r->tables, WC_ASCII_FILL, WC_FILL_LO, WC_FILL_HI, WC_FILL_CURVE);
+  wc_ascii_layer_info(r->tables->layer_info);
+  TempAllocator atmp = tctx_temp_allocator_begin(NULL);
+  u8 *atlas = ALLOC_ARRAY(&atmp.allocator, u8, WC_ATLAS_W * WC_FONT_H_PX);
+  wc_ascii_atlas_pixels(atlas);
+  r->atlas = gpu_make_texture_mips(&(GpuTextureMipsDesc){.format = GPU_TEXTURE_FORMAT_R8, .width = WC_ATLAS_W,
+                                                         .height = WC_FONT_H_PX, .data = atlas,
+                                                         .data_size = WC_ATLAS_W * WC_FONT_H_PX,
+                                                         .label = "wc ascii font"});
+  tctx_temp_allocator_end(atmp);
 
   GpuTextureMipsDesc blk = {.format = GPU_TEXTURE_FORMAT_RGBA8_SRGB, .width = WC_TEX_SIZE, .height = WC_TEX_SIZE,
                             .layer_count = T_COUNT, .mip_count = WC_TEX_MIPS, .data = tex->albedo,
@@ -493,6 +584,48 @@ void wc_render_init(WcRenderer *r, Allocator *alloc, const WcTextureData *tex, u
 }
 
 void wc_render_invalidate_history(WcRenderer *r) { r->reset_history = true; }
+
+void wc_render_request_dump(WcRenderer *r, u32 tag) {
+  r->dump_state = 1;
+  r->dump_tag = tag;
+}
+
+hz_internal b32 wc_dump_write(GpuTexture tex, u32 w, u32 h, u32 tag, const char *name, Allocator *ta) {
+  u32 size = w * h * 4;
+  u8 *px = ALLOC_ARRAY_NO_ZERO(ta, u8, size);
+  if (!gpu_get_texture_read(tex, 0, px, size)) return false;
+  String path = str_format(ta, "out/ascii_%_%.rgba", fmt_u32(tag), fmt_cstr(name));
+  os_write_file(path.value, px, size);
+  log_info("wc_dump % % x %", fmt_str(path), fmt_u32(w), fmt_u32(h));
+  return true;
+}
+
+// queues the reads after this frame's passes, then writes the files once the gpu has finished them
+hz_internal void wc_dump_tick(WcRenderer *r, u32 ci) {
+  if (r->dump_state == 1) {
+    GpuReadTextureDesc full = {0};
+    gpu_queue_texture_read(wc_color(r->ldr, 0), 0, &full);
+    gpu_queue_texture_read(wc_color(r->cells[ci], 0), 0, &full);
+    gpu_queue_texture_read(wc_color(r->cells[ci], 1), 0, &full);
+    gpu_queue_texture_read(wc_color(r->cells[1 - ci], 0), 0, &full);
+    r->dump_cells = ci;
+    r->dump_w = r->grid.cols * WC_CELL_W;
+    r->dump_h = r->grid.rows * WC_CELL_H;
+    r->dump_cols = r->grid.cols;
+    r->dump_rows = r->grid.rows;
+    r->dump_state = 2;
+    return;
+  }
+  if (r->dump_state != 2) return;
+  TempAllocator tmp = tctx_temp_allocator_begin(NULL);
+  u32 c = r->dump_cells;
+  b32 ok = wc_dump_write(wc_color(r->ldr, 0), r->dump_w, r->dump_h, r->dump_tag, "ldr", &tmp.allocator) &&
+           wc_dump_write(wc_color(r->cells[c], 0), r->dump_cols, r->dump_rows, r->dump_tag, "glyph", &tmp.allocator) &&
+           wc_dump_write(wc_color(r->cells[c], 1), r->dump_cols, r->dump_rows, r->dump_tag, "back", &tmp.allocator) &&
+           wc_dump_write(wc_color(r->cells[1 - c], 0), r->dump_cols, r->dump_rows, r->dump_tag, "prev", &tmp.allocator);
+  if (ok) r->dump_state = 0;
+  tctx_temp_allocator_end(tmp);
+}
 
 // ---- culling ----
 
@@ -830,8 +963,6 @@ hz_internal void wc_frame_uniforms(const WcRenderer *r) {
   gpu_apply_uniforms(0, (void *)&r->frame, sizeof(WcFrameUniforms));
 }
 
-force_inline GpuTexture wc_color(GpuRenderTarget rt, u32 i) { return gpu_get_render_target_attachment(rt, i); }
-force_inline GpuTexture wc_depth(GpuRenderTarget rt) { return gpu_get_render_target_depth(rt); }
 
 typedef enum { WC_TERRAIN_GBUFFER, WC_TERRAIN_SHADOW, WC_TERRAIN_WATER } WcTerrainPass;
 
@@ -877,16 +1008,6 @@ hz_internal void wc_fullscreen_draw(void) { gpu_draw(3, 1); }
 
 // ---- frame ----
 
-hz_internal f32 wc_halton(u32 i, u32 b) {
-  f32 f = 1, r = 0;
-  while (i > 0) {
-    f /= (f32)b;
-    r += f * (f32)(i % b);
-    i /= b;
-  }
-  return r;
-}
-
 force_inline f32 wc_smooth(f32 e0, f32 e1, f32 x) {
   f32 t = m_clampf((x - e0) / (e1 - e0), 0, 1);
   return t * t * (3 - 2 * t);
@@ -912,6 +1033,9 @@ hz_internal void wc_prime_targets(WcRenderer *r) {
   wc_clear_rt(r->cloud_hist[0], (ColorF32){0, 0, 0, 1});
   wc_clear_rt(r->cloud_hist[1], (ColorF32){0, 0, 0, 1});
   for (u32 i = 0; i < WC_BLOOM_LEVELS; i++) wc_clear_rt(r->bloom[i], zero);
+  wc_clear_rt(r->ldr, zero);
+  wc_clear_rt(r->cells[0], zero);
+  wc_clear_rt(r->cells[1], zero);
   r->needs_prime = false;
   // clearing these on a resize would wipe the built luts and the adapted exposure
   if (r->fixed_primed) return;
@@ -973,29 +1097,57 @@ b32 wc_render_ready(WcRenderer *r) {
         gpu_compute_pipeline_is_ready(r->cull_expand_cs) &&
         gpu_pipeline_is_ready(r->atmospherics) &&
         gpu_pipeline_is_ready(r->bloom_down) && gpu_pipeline_is_ready(r->bloom_up) &&
-        gpu_pipeline_is_ready(r->exposure) && gpu_pipeline_is_ready(r->final);
+        gpu_pipeline_is_ready(r->exposure) && gpu_pipeline_is_ready(r->tonemap) &&
+        gpu_pipeline_is_ready(r->ascii_cells) && gpu_pipeline_is_ready(r->ascii_compose);
   if (r->core_ready && !r->pipelines_ready)
     r->pipelines_ready = wc_noise_pipelines_ready(r) &&
                          wc_effects_ready(r) == (WC_EFFECT_SSAO | WC_EFFECT_CLOUDS | WC_EFFECT_TAA);
   return r->core_ready;
 }
 
+// uploads this frame's ui cells and composes the grid (or only the ui, while the scene cannot draw)
+hz_internal void wc_compose(WcRenderer *r, const WcFrameInput *in, const WcAsciiGrid *grid, u32 ci, b32 scene) {
+  u32 ucols = in->ui_cells ? in->ui_cols : 0, urows = in->ui_cells ? in->ui_rows : 0;
+  if (ucols && urows) gpu_update_texture_region(r->ui_tex, 0, 0, ucols * 2, urows, in->ui_cells);
+  wc_pass(r, WC_GPU_FINAL, (GpuPassDesc){.clear_color = {0, 0, 0, 1}});
+  gpu_apply_pipeline(r->ascii_compose);
+  u32 flags = (r->atlas_test ? 1u : 0u) | (in->crosshair ? 2u : 0u) | (scene ? 0u : 4u);
+  u32 m = grid->m, cell_w = WC_CELL_W * grid->k, cell_h = WC_CELL_H * grid->k;
+  u32 uox = grid->ox + (grid->cols - ucols * m) / 2 * cell_w, uoy = grid->oy + (grid->rows - urows * m) / 2 * cell_h;
+  shader_wc_ascii_compose_apply_p(&(ShaderWcAsciiComposeComposeParams){
+      .grid = {grid->k, grid->cols, grid->rows, flags},
+      .origin = {grid->ox, grid->oy, r->settings.ascii_palette, 0},
+      .ui = {m, ucols, urows, 0},
+      .ui_origin = {uox, uoy, 0, 0}});
+  shader_wc_ascii_compose_apply_bindings((ShaderWcAsciiComposeBindings){.glyph_tex = wc_color(r->cells[ci], 0),
+                                                                        .back_tex = wc_color(r->cells[ci], 1),
+                                                                        .glow_tex = wc_color(r->cells[ci], 2),
+                                                                        .atlas_tex = r->atlas,
+                                                                        .ui_tex = r->ui_tex});
+  wc_fullscreen_draw();
+  wc_end(r);
+}
+
 void wc_render_frame(WcRenderer *r, const WcWorld *world, const WcFrameInput *in, const WcEntityGeometry *ents,
                      u32 out_w, u32 out_h) {
   const WcRenderSettings *s = &r->settings;
-  f32 scale = wc_output_scale(s, in->dpr);
-  u32 w = wc_scaled(out_w, scale);
-  u32 h = wc_scaled(out_h, scale);
-  u32 uw, uh;
-  wc_upscale_size(s, out_w, out_h, in->dpr, w, h, &uw, &uh);
+  WcAsciiGrid grid = wc_ascii_grid(out_w, out_h, in->dpr, wc_ascii_text_css(s->text_size));
+  u32 w, h, uw, uh;
+  wc_scene_size(s, &grid, &w, &h, &uw, &uh);
   wc_ensure_targets(r, w, h, uw, uh);
+  wc_ensure_ascii(r, &grid);
+  wc_ensure_ui(r, &grid);
   wc_ensure_shadow(r);
   wc_prime_targets(r);
   r->stats = (WcRenderStats){0};
   r->timer_used = 0;
   if (!wc_render_ready(r)) {
-    gpu_begin_pass(&(GpuPassDesc){.clear_color = {0, 0, 0, 1}});
-    gpu_end_pass();
+    if (gpu_pipeline_is_ready(r->ascii_compose)) {
+      wc_compose(r, in, &grid, r->cells_idx, false);
+    } else {
+      gpu_begin_pass(&(GpuPassDesc){.clear_color = {0, 0, 0, 1}});
+      gpu_end_pass();
+    }
     return;
   }
   if (!r->noise_baked && wc_noise_pipelines_ready(r)) wc_bake_noise(r);
@@ -1021,15 +1173,9 @@ void wc_render_frame(WcRenderer *r, const WcWorld *world, const WcFrameInput *in
   f32 aspect = (f32)w / (f32)h;
   f32 far_d = m_maxf(420.0f, s->render_distance * 16 * 1.6f + 96);
   m4 proj_nj = m4_perspective_inf(fov_y, aspect, WC_NEAR);
+  // no subpixel jitter: cells sample surfaces at fixed points, and a still camera must keep every glyph
   m4 proj = proj_nj;
   f32 jx = 0, jy = 0;
-  if (s->taa) {
-    u32 hi = r->frame_index % 8 + 1;
-    jx = (wc_halton(hi, 2) - 0.5f) * 2.0f / w;
-    jy = (wc_halton(hi, 3) - 0.5f) * 2.0f / h;
-  }
-  proj.m[2][0] += jx;
-  proj.m[2][1] += jy;
   m4 view_proj = m4_mul(proj, view);
   m4 view_proj_nj = m4_mul(proj_nj, view);
   m4 inv_view_proj = m4_inv(view_proj);
@@ -1126,6 +1272,7 @@ void wc_render_frame(WcRenderer *r, const WcWorld *world, const WcFrameInput *in
   F->weather = (v4){in->rain, in->wetness, 1 + in->rain * 1.5f, s->volumetrics ? 1.0f : 0.0f};
   F->sky = (v4){WC_SUN_ILLUM, WC_MOON_ILLUM, 0.00035f + night * 0.0004f, night};
   F->extra = (v4){in->snow, in->snow_cover, in->flash, (f32)r->debug_view};
+  F->ascii = (v4){(f32)w / grid.cols, (f32)h / grid.rows, (f32)grid.cols, (f32)grid.rows};
 
   // ---- draw records and culling ----
   WcDrawRecord *records = ALLOC_ARRAY_NO_ZERO(ta, WcDrawRecord, world->renderable_count * 2 + 1);
@@ -1397,7 +1544,7 @@ void wc_render_frame(WcRenderer *r, const WcWorld *world, const WcFrameInput *in
   wc_begin(r, WC_GPU_BLOOM, r->exposure_rt[ei]);
   gpu_apply_pipeline(r->exposure);
   shader_wc_exposure_apply_p(&(ShaderWcExposureExposureParams){
-      .params = {m_minf(0.1f, in->dt), 0.02f, in->underwater ? 5.0f : 11.0f, 0.0f}});
+      .params = {m_minf(0.1f, in->dt), 0.02f, in->underwater ? 5.0f : WC_MAX_EXPOSURE, 0.0f}});
   shader_wc_exposure_apply_bindings((ShaderWcExposureBindings){.src_tex = wc_color(r->bloom[1], 0),
                                                                .prev_tex = wc_color(r->exposure_rt[1 - ei], 0)});
   wc_fullscreen_draw();
@@ -1412,25 +1559,49 @@ void wc_render_frame(WcRenderer *r, const WcWorld *world, const WcFrameInput *in
     wc_end(r);
   }
 
-  // ---- final composite to the swapchain ----
-  wc_pass(r, WC_GPU_FINAL, (GpuPassDesc){.clear_color = {0, 0, 0, 1}});
-  gpu_apply_pipeline(r->final);
+  // ---- tonemap at grid resolution ----
+  wc_begin(r, WC_GPU_FINAL, r->ldr);
+  gpu_apply_pipeline(r->tonemap);
   wc_frame_uniforms(r);
-  ShaderWcFinalFinalParams fp = {.grade = {s->bloom ? 0.055f : 0.0f, s->taa ? 0.35f : 0.0f, 1.18f, 1.22f}};
-  if (in->has_selection) {
-    fp.sel_min = (v4){(f32)(in->sel.x - cam.x), (f32)(in->sel.y - cam.y), (f32)(in->sel.z - cam.z), 1};
-    fp.sel_max = (v4){(f32)(in->sel.x + 1 - cam.x), (f32)(in->sel.y + 1 - cam.y), (f32)(in->sel.z + 1 - cam.z), 0};
-  }
+  ShaderWcTonemapTonemapParams fp = {.grade = {s->bloom ? 0.055f : 0.0f, 0.0f, WC_ASCII_SATURATION, WC_ASCII_CONTRAST}};
   // debug views 1..6 show raw values at a fixed exposure
-  if (r->debug_view >= 1 && r->debug_view <= 6) fp.sel_max.w = 0.72f;
-  fp.crosshair = (v4){(f32)out_w, (f32)out_h, m_maxf(in->dpr, 1.0f), in->crosshair ? 1.0f : 0.0f};
-  shader_wc_final_apply_p(&fp);
-  shader_wc_final_apply_bindings((ShaderWcFinalBindings){.color_tex = resolved,
-                                                         .bloom_tex = wc_color(r->bloom[0], 0),
-                                                         .exposure_tex = wc_color(r->exposure_rt[ei], 0),
-                                                         .depth_tex = scene_depth});
+  if (r->debug_view >= 1 && r->debug_view <= 6) fp.grade.y = 0.72f;
+  shader_wc_tonemap_apply_p(&fp);
+  shader_wc_tonemap_apply_bindings((ShaderWcTonemapBindings){.color_tex = resolved,
+                                                             .bloom_tex = wc_color(r->bloom[0], 0),
+                                                             .exposure_tex = wc_color(r->exposure_rt[ei], 0),
+                                                             .depth_tex = scene_depth, .clouds_tex = clouds});
   wc_fullscreen_draw();
   wc_end(r);
+
+  // ---- ascii cells: one fragment per character cell ----
+  u32 ci = r->cells_idx;
+  wc_begin(r, WC_GPU_FINAL, r->cells[ci]);
+  gpu_apply_pipeline(r->ascii_cells);
+  wc_frame_uniforms(r);
+  shader_wc_ascii_cells_apply_t((ShaderWcAsciiCellsCellTables *)r->tables);
+  b32 translucent = trans.count > 0;
+  ShaderWcAsciiCellsCellParams cells_p = {
+      .grid = {grid.cols, grid.rows, r->cells_valid ? 1u : 0u, translucent ? 1u : 0u},
+      .ink = {0.92f, 3.0f, WC_INK_GAIN, s->ascii_tint},
+      .sky = {0.8f, 0.35f, s->ascii_glow, (f32)WC_RAMP_HYSTERESIS}};
+  if (in->has_selection) {
+    cells_p.sel_min = (v4){(f32)(in->sel.x - cam.x), (f32)(in->sel.y - cam.y), (f32)(in->sel.z - cam.z), 1};
+    cells_p.sel_max = (v4){(f32)(in->sel.x + 1 - cam.x), (f32)(in->sel.y + 1 - cam.y), (f32)(in->sel.z + 1 - cam.z), 0};
+  }
+  shader_wc_ascii_cells_apply_p(&cells_p);
+  shader_wc_ascii_cells_apply_bindings((ShaderWcAsciiCellsBindings){
+      .ldr_tex = wc_color(r->ldr, 0), .prev_tex = wc_color(r->cells[1 - ci], 0), .mat_tex = wc_color(r->gbuf, 4),
+      .depth_tex = translucent ? wc_depth(r->depth_copy) : gdepth,
+      .liquid_tex = wc_color(r->scene, 1)});
+  wc_fullscreen_draw();
+  wc_end(r);
+
+  // ---- compose the grid and the text ui onto the swapchain ----
+  wc_compose(r, in, &grid, ci, true);
+  wc_dump_tick(r, ci);
+  r->cells_idx = 1 - ci;
+  r->cells_valid = true;
 
   // ---- bookkeeping ----
   r->prev_view_proj = view_proj_nj;

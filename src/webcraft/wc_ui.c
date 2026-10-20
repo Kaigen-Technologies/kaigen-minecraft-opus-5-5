@@ -1,158 +1,132 @@
 #include "webcraft/wc_game.h"
 #include "input.h"
 
-// screens (loading, menu, settings, inventory, error) and the hud, after index.html
+// text-mode screens (loading, menu, settings, inventory, error) and the hud, drawn into g->tui
 
-#define WC_C_TEXT ((HzUIColor){242, 242, 242, 255})
-#define WC_C_MUTED ((HzUIColor){169, 176, 189, 255})
-#define WC_C_ACCENT ((HzUIColor){127, 211, 107, 255})
-#define WC_C_PANEL ((HzUIColor){12, 14, 20, 184})
-#define WC_C_PANEL_BORDER ((HzUIColor){255, 255, 255, 31})
-#define WC_C_BTN ((HzUIColor){255, 255, 255, 20})
-#define WC_C_BTN_HI ((HzUIColor){255, 255, 255, 41})
-#define WC_C_BTN_BORDER ((HzUIColor){255, 255, 255, 36})
-#define WC_C_INSET ((HzUIColor){255, 255, 255, 20})
-#define WC_C_POPUP ((HzUIColor){27, 30, 37, 250})
+#define WC_C_TEXT 0xF2F2F2u
+#define WC_C_MUTED 0xA9B0BDu
+#define WC_C_DIM 0x6A7080u
+#define WC_C_ACCENT 0x7FD36Bu
+#define WC_C_HOVER 0xFFFF7Au // minecraft's highlighted button text
+#define WC_C_ERROR 0xFFB4B4u
+#define WC_C_PANEL 0x0C0E14u
+#define WC_C_BUTTON 0x2A2F3Au
+#define WC_C_BUTTON_HI 0x3D4556u
+#define WC_A_PANEL 225
+#define WC_A_SCRIM 120
+#define WC_A_HUD 235 // hud panels: scene glyphs must not show through what sits on them
 
-#define WC_SETTING_LABEL_W 170.0f
-#define WC_SETTING_VALUE_W 60.0f
-#define WC_SLIDER_TRACK_W 250.0f
-#define WC_SLIDER_THUMB_W 14.0f
-#define WC_INV_COLS 10
-#define WC_INV_CELL 54.0f
-#define WC_INV_GAP 6.0f
+// the web page's "Made with Kaigen" link owns the top-right corner above this many logical px
+#define WC_BADGE_CLEAR 66.0f
+#define WC_LOGO_WORD "ASCIICRAFT"
+#define WC_LOGO_W (WC_CELL_W * (i32)(sizeof(WC_LOGO_WORD) - 1))
+#define WC_LOGO_H 9
 
-typedef enum {
-  WC_BTN_PLAY,
-  WC_BTN_SETTINGS,
-  WC_BTN_NEW_WORLD,
-  WC_BTN_SETTINGS_DONE,
-  WC_BTN_MODAL_CANCEL,
-  WC_BTN_MODAL_CONFIRM,
-  WC_BTN_INVENTORY_DONE,
-} WcButtonSlot;
-
-// a phone held in landscape is about 390 ui px tall: screens drop to their compact layout
-#define WC_COMPACT_H 500.0f
-
-hz_internal HzUIString wc_uis(const char *s) { return (HzUIString){.chars = s, .length = (i32)cstr_len(s)}; }
-
-hz_internal HzUIString wc_uistr(String s) { return (HzUIString){.chars = s.value, .length = (i32)s.len}; }
-
-// dynamic text lives on the non-scoped temp allocator until the ui is drawn
 hz_internal Allocator wc_frame_alloc(void) { return tctx_temp_allocator(NULL); }
 
-hz_internal b32 wc_released_on(WcGame *g) {
-  return ui_hovered() && g->input.buttons[MOUSE_LEFT].released_this_frame;
+force_inline WcRect wc_rect(i32 x, i32 y, i32 w, i32 h) { return (WcRect){x, y, w, h}; }
+
+// a panel w x h centred on the grid (clamped to it)
+hz_internal WcRect wc_centred(const WcTui *t, i32 w, i32 h) {
+  w = MIN(w, (i32)t->cols);
+  h = MIN(h, (i32)t->rows);
+  return wc_rect(((i32)t->cols - w) / 2, ((i32)t->rows - h) / 2, w, h);
 }
 
-hz_internal b32 wc_button(WcGame *g, HzUIElementId id, const char *label, WcButtonSlot slot, b32 primary, b32 grow) {
-  UIInteractAnim *anim = &g->button_anims[slot];
-  UIGradient grad = {0};
-  HzUIColor bg = ui_color_lerp(WC_C_BTN, WC_C_BTN_HI, anim->hover);
-  HzUIColor border = WC_C_BTN_BORDER;
-  if (primary) {
-    HzUIColor top = ui_color_lerp((HzUIColor){98, 176, 79, 255}, (HzUIColor){111, 195, 91, 255}, anim->hover);
-    HzUIColor bot = ui_color_lerp((HzUIColor){63, 138, 51, 255}, (HzUIColor){71, 154, 58, 255}, anim->hover);
-    grad = (UIGradient){.kind = UI_GRADIENT_LINEAR, .angle = 180, .stop_count = 2,
-                        .stops = {{0, top}, {1, bot}}};
-    border = WC_C_ACCENT;
+hz_internal void wc_scrim(WcTui *t) { wc_tui_fill(t, wc_rect(0, 0, (i32)t->cols, (i32)t->rows), 0, WC_A_SCRIM); }
+
+hz_internal void wc_panel(WcTui *t, WcRect r) {
+  wc_tui_fill(t, r, WC_C_PANEL, WC_A_PANEL);
+  wc_tui_box(t, r, WC_C_DIM);
+}
+
+// a button: boxed when h >= 3, else one row "[ label ]"; hover lights the text like minecraft's
+hz_internal b32 wc_button(WcGame *g, u32 id, WcRect r, const char *label, b32 primary) {
+  WcTui *t = &g->tui;
+  WcTuiHit h = wc_tui_area(t, id, r);
+  if (h.hovered) g->cursor = OS_CURSOR_HAND;
+  wc_tui_fill(t, r, h.hovered || h.held ? WC_C_BUTTON_HI : WC_C_BUTTON, 255);
+  u32 fg = h.hovered ? WC_C_HOVER : primary ? WC_C_ACCENT : WC_C_TEXT;
+  String s = cstr_to_str(label);
+  i32 ty = r.y + r.h / 2;
+  if (r.h >= 3) {
+    wc_tui_box(t, r, h.hovered ? WC_C_HOVER : primary ? WC_C_ACCENT : WC_C_DIM);
+  } else {
+    wc_tui_put(t, r.x, ty, '[', fg);
+    wc_tui_put(t, r.x + r.w - 1, ty, ']', fg);
   }
-  b32 clicked = false;
-  HzUITransform pressed = {.translate = {0, anim->press}};
-  Optional(HzUITransform) transform = anim->press > 0.01f ? opt_some(HzUITransform, pressed) : opt_none(HzUITransform);
-  ui_element({
-      .id = id,
-      .layout = {.sizing = {.width = grow ? ui_sizing_grow(0) : ui_sizing_fit(0), .height = ui_sizing_fixed(44)},
-                 .padding = {.left = 16, .right = 16},
-                 .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
-      .background_color = bg,
-      .gradient = grad,
-      .corner_radius = ui_corner_radius(10),
-      .border = {.color = border, .width = ui_border_outside(1)},
-      .transform = transform,
-  }) {
-    *anim = ui_interact_anim(g->ui, id, &g->input);
-    clicked = wc_released_on(g);
-    if (ui_hovered()) g->cursor = OS_CURSOR_HAND;
-    ui_text(wc_uis(label), ui_text_config({.fontSize = 15, .weight = UI_FONT_SEMIBOLD, .textColor = WC_C_TEXT}));
-  }
-  return clicked;
+  wc_tui_center(t, r, ty, s, fg);
+  return h.clicked;
 }
 
-hz_internal void wc_title(const char *text, f32 size) {
-  ui_text(wc_uis(text), ui_text_config({.fontSize = size, .weight = UI_FONT_BOLD, .letterSpacing = size > 40 ? 1 : 0,
-                                        .textColor = (HzUIColor){236, 245, 232, 255}}));
-}
-
-hz_internal void wc_muted(const char *text, f32 size) {
-  ui_text(wc_uis(text), ui_text_config({.fontSize = size, .textColor = WC_C_MUTED, .lineHeight = size * 1.4f,
-                                        .wrapMode = UI_TEXT_WRAP_WORDS}));
-}
-
-// full-screen scrim (radial vignette) with a centred column for the panel
-hz_internal HzUIElementDesc wc_screen_desc(const WcGame *g, HzUIElementId id) {
-  return (HzUIElementDesc){
-      .id = id,
-      .floating = {.attach_to = UI_ATTACH_TO_ROOT, .z_index = 10},
-      .layout = {.sizing = {.width = ui_sizing_grow(0), .height = ui_sizing_grow(0)},
-                 .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
-      .image = {.texture = g->scrim},
-  };
-}
-
-hz_internal HzUIElementDesc wc_panel_desc(HzUIElementId id, f32 panel_w) {
-  return (HzUIElementDesc){
-      .id = id,
-      .layout = {.sizing = {.width = panel_w > 0 ? ui_sizing_fixed(panel_w) : ui_sizing_fit(0),
-                            .height = ui_sizing_fit(0)},
-                 .layout_direction = UI_TOP_TO_BOTTOM,
-                 .padding = {.left = 32, .right = 32, .top = 28, .bottom = 28},
-                 .child_gap = 8},
-      .background_color = WC_C_PANEL,
-      .corner_radius = ui_corner_radius(16),
-      .corner_smoothing = 0.6f,
-      .border = {.color = WC_C_PANEL_BORDER, .width = ui_border_outside(1)},
-      .shadow = {.color = {0, 0, 0, 128}, .offset_y = 20, .blur = 60},
-  };
-}
-
-// ---- loading ----
-
-hz_internal void wc_loading_screen(WcGame *g) {
-  f32 prog = 0.05f;
-  const char *text = "Starting...";
-  if (g->boot != WC_BOOT_START) {
-    f32 wp = g->world_created ? wc_world_load_progress(&g->world, (i32)m_minf(4.0f, (f32)g->settings.render_distance)) : 0;
-    prog = 0.3f + wp * 0.7f;
-    Allocator fa = wc_frame_alloc();
-    text = str_format(&fa, "Generating terrain... %%", fmt_u32((u32)(wp * 100 + 0.5f)), fmt_char('%')).value;
-  }
-  HzUIElementDesc sd1 = wc_screen_desc(g, ui_id("LoadingScreen"));
-  ui_element_of(&sd1) {
-    HzUIElementDesc pd6 = wc_panel_desc(ui_id("LoadingPanel"), 0);
-    ui_element_of(&pd6) {
-      ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .layout_direction = UI_TOP_TO_BOTTOM,
-                             .child_alignment = {.x = UI_ALIGN_X_CENTER}, .child_gap = 2}}) {
-        wc_title("WebCraft", 44);
-        wc_muted("Shaders Edition", 14);
-        ui_element({.id = ui_id("LoadingBar"),
-                    .layout = {.sizing = {.width = ui_sizing_fixed(320), .height = ui_sizing_fixed(8)},
-                               .margin = {.top = 14}},
-                    .background_color = {255, 255, 255, 26},
-                    .corner_radius = ui_corner_radius(4)}) {
-          ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(320 * m_clampf(prog, 0, 1)),
-                                            .height = ui_sizing_grow(0)}},
-                      .corner_radius = ui_corner_radius(4),
-                      .gradient = {.kind = UI_GRADIENT_LINEAR, .angle = 90, .stop_count = 2,
-                                   .stops = {{0, {98, 176, 79, 255}}, {1, {155, 224, 127, 255}}}}}) {}
-        }
-        ui_element({.layout = {.margin = {.top = 8}}}) {
-          ui_text(wc_uis(text), ui_text_config({.fontSize = 13, .textColor = WC_C_MUTED}));
+// the game name in Monocraft letters, one cell per font pixel: stone glyphs in greys over a darker extruded shadow
+hz_internal void wc_logo(WcTui *t, i32 x, i32 y) {
+  const char *word = WC_LOGO_WORD;
+  for (u32 pass = 0; pass < 2; pass++) {
+    for (u32 i = 0; word[i]; i++) {
+      u32 g = (u32)word[i] - 32;
+      for (u32 fy = 0; fy < WC_CELL_H; fy++) {
+        for (u32 fx = 0; fx < WC_CELL_W; fx++) {
+          if (!wc_font_bit(g, fx, fy)) continue;
+          i32 cx = x + (i32)(i * WC_CELL_W + fx), cy = y + (i32)fy;
+          if (pass == 0) {
+            wc_tui_fill(t, wc_rect(cx + 1, cy + 1, 1, 1), 0x15161Au, 255);
+            continue;
+          }
+          u32 h = wc_hash2i(cx, cy, 0x51u);
+          // lighter toward the top, like the lit face of stone
+          u32 v = 150 + (h & 31) - fy * 7;
+          u32 grey = (v << 16) | (v << 8) | v, under = ((v / 3) << 16) | ((v / 3) << 8) | (v / 3 + 4);
+          wc_tui_fill(t, wc_rect(cx, cy, 1, 1), under, 255);
+          const char *stone = "#@%&8$";
+          wc_tui_put(t, cx, cy, stone[(h >> 8) % 6], grey);
         }
       }
     }
   }
+}
+
+// the title block: the big logo when the grid has room, else spaced capitals; returns rows used
+hz_internal i32 wc_title_block(WcTui *t, WcRect r, i32 y, const char *subtitle) {
+  if (r.w >= WC_LOGO_W + 4 && t->rows >= 30) {
+    wc_logo(t, r.x + (r.w - WC_LOGO_W) / 2, y);
+    wc_tui_center(t, r, y + WC_LOGO_H + 1, cstr_to_str(subtitle), WC_C_MUTED);
+    return WC_LOGO_H + 2;
+  }
+  wc_tui_center(t, r, y, STR_FROM_CSTR("A S C I I C R A F T"), WC_C_ACCENT);
+  wc_tui_center(t, r, y + 1, cstr_to_str(subtitle), WC_C_MUTED);
+  return 2;
+}
+
+// ---- loading ----
+
+hz_internal void wc_progress_bar(WcTui *t, i32 x, i32 y, i32 w, f32 v, u32 fg) {
+  i32 inner = MAX(1, w - 2);
+  i32 n = (i32)(m_clampf(v, 0, 1) * (f32)inner + 0.5f);
+  wc_tui_put(t, x, y, '[', WC_C_DIM);
+  for (i32 i = 0; i < inner; i++) wc_tui_put(t, x + 1 + i, y, i < n ? '#' : '.', i < n ? fg : WC_C_DIM);
+  wc_tui_put(t, x + 1 + inner, y, ']', WC_C_DIM);
+}
+
+hz_internal void wc_loading_screen(WcGame *g) {
+  WcTui *t = &g->tui;
+  f32 prog = 0.05f;
+  Allocator fa = wc_frame_alloc();
+  String text = STR_FROM_CSTR("Starting...");
+  if (g->boot != WC_BOOT_START) {
+    f32 wp = g->world_created ? wc_world_load_progress(&g->world, (i32)m_minf(4.0f, (f32)g->settings.render_distance)) : 0;
+    prog = 0.3f + wp * 0.7f;
+    text = str_format(&fa, "Generating terrain...", fmt_u32(0));
+  }
+  wc_scrim(t);
+  WcRect p = wc_centred(t, MIN(WC_LOGO_W + 4, (i32)t->cols), t->rows >= 30 ? WC_LOGO_H + 8 : 7);
+  wc_panel(t, p);
+  i32 y = p.y + 1 + wc_title_block(t, p, p.y + 1, "a voxel sandbox");
+  i32 bw = MIN(p.w - 10, 40);
+  wc_progress_bar(t, p.x + (p.w - bw - 5) / 2, y, bw, prog, WC_C_ACCENT);
+  String pct = str_format(&fa, "%%", fmt_u32((u32)(m_clampf(prog, 0, 1) * 100 + 0.5f)), fmt_char('%'));
+  wc_tui_text(t, p.x + (p.w - bw - 5) / 2 + bw + 1, y, pct, WC_C_TEXT);
+  wc_tui_center(t, p, y + 1, text, WC_C_MUTED);
 }
 
 // ---- menu ----
@@ -163,692 +137,603 @@ typedef struct {
 } WcControlRow;
 
 hz_internal const WcControlRow WC_CONTROLS[] = {
-    {"W A S D", "Move \xc2\xb7 double-tap W or Ctrl to sprint"},
-    {"Space", "Jump \xc2\xb7 double-tap to fly (or F)"},
-    {"Shift", "Sneak \xc2\xb7 fly down"},
+    {"W A S D", "Move - double-tap W or Ctrl to sprint"},
+    {"Space", "Jump - double-tap to fly (or F)"},
+    {"Shift", "Sneak - fly down"},
     {"Left / Right click", "Break / place block"},
     {"Middle click", "Pick block"},
-    {"1\xe2\x80\x93" "9 / wheel", "Select hotbar slot"},
+    {"1-9 / wheel", "Select hotbar slot"},
     {"E", "Block inventory"},
-    {"T (hold)", "Fast-forward time \xc2\xb7 Shift+T rewind"},
+    {"T (hold)", "Fast-forward time - Shift+T rewind"},
     {"F1 / F2 / F3", "Hide HUD / screenshot / debug info"},
 };
 
+hz_internal const WcControlRow WC_TOUCH_CONTROLS[] = {
+    {"Left thumb", "Move - push to the edge to sprint"},
+    {"Drag", "Look around"},
+    {"Tap / hold", "Place / break a block"},
+    {"Jump", "Double-tap to fly - Sneak flies down"},
+};
+
 hz_internal void wc_new_world_modal(WcGame *g) {
-  f32 t = ui_spring(g->ui, ui_id("NewWorldModalT"), g->new_world_modal.open ? 1.0f : 0.0f);
-  if (t < 0.01f) return;
-  ui_element({.id = ui_id("NewWorldScrim"),
-              .floating = {.attach_to = UI_ATTACH_TO_ROOT, .z_index = 30},
-              .layout = {.sizing = {.width = ui_sizing_grow(0), .height = ui_sizing_grow(0)},
-                         .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
-              .background_color = {0, 0, 0, 140.0f * t}}) {
-    ui_interact_modal(&g->new_world_modal, &g->input);
-    HzUIElementDesc pd7 = wc_panel_desc(ui_id("NewWorldPanel"), 380);
-    ui_element_of(&pd7) {
-      ui_interact_modal_content(&g->new_world_modal);
-      wc_title("New World", 24);
-      wc_muted("Start a brand new world? Your current world will be replaced.", 14);
-      ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .child_gap = 10, .padding = {.top = 10}}}) {
-        if (wc_button(g, ui_id("NewWorldCancelBtn"), "Cancel", WC_BTN_MODAL_CANCEL, false, true))
-          ui_interact_modal_close(&g->new_world_modal);
-        if (wc_button(g, ui_id("NewWorldConfirmBtn"), "New World", WC_BTN_MODAL_CONFIRM, true, true)) {
-          ui_interact_modal_close(&g->new_world_modal);
-          wc_game_new_world(g);
-        }
-      }
-    }
+  if (!g->new_world_open) return;
+  WcTui *t = &g->tui;
+  wc_tui_fill(t, wc_rect(0, 0, (i32)t->cols, (i32)t->rows), 0, 140);
+  String msg = STR_FROM_CSTR("Start a brand new world? Your current world will be replaced.");
+  i32 w = MIN(46, (i32)t->cols);
+  i32 rows = wc_tui_wrap_rows(msg, w - 4);
+  WcRect p = wc_centred(t, w, rows + 8);
+  wc_panel(t, p);
+  // a click outside the box cancels, like the scrim of a modal
+  WcTuiHit outside = wc_tui_area(t, wc_tui_id("NewWorldScrim", 0), wc_rect(0, 0, (i32)t->cols, (i32)t->rows));
+  WcTuiHit inside = wc_tui_area(t, wc_tui_id("NewWorldPanel", 0), p);
+  UNUSED(inside);
+  wc_tui_cstr(t, p.x + 2, p.y + 1, "New World", WC_C_TEXT);
+  wc_tui_wrap(t, wc_rect(p.x + 2, p.y + 3, p.w - 4, rows), msg, WC_C_MUTED);
+  i32 bw = (p.w - 5) / 2, by = p.y + p.h - 4;
+  if (wc_button(g, wc_tui_id("NewWorldCancelBtn", 0), wc_rect(p.x + 2, by, bw, 3), "Cancel", false)) {
+    g->new_world_open = false;
+  } else if (wc_button(g, wc_tui_id("NewWorldConfirmBtn", 0), wc_rect(p.x + 3 + bw, by, bw, 3), "New World", true)) {
+    g->new_world_open = false;
+    wc_game_new_world(g);
+  } else if (outside.clicked) {
+    g->new_world_open = false;
   }
 }
 
-hz_internal const WcControlRow WC_TOUCH_CONTROLS[] = {
-    {"Left thumb", "Move \xc2\xb7 push to the edge to sprint"},
-    {"Drag", "Look around"},
-    {"Tap / hold", "Place / break a block"},
-    {"Jump", "Double-tap to fly \xc2\xb7 Sneak flies down"},
-};
-
 hz_internal void wc_menu_screen(WcGame *g) {
-  b32 compact = (f32)g->ui->canvas_height < WC_COMPACT_H;
+  WcTui *t = &g->tui;
+  b32 compact = t->rows < 30;
   const WcControlRow *controls = g->touch_mode ? WC_TOUCH_CONTROLS : WC_CONTROLS;
-  u32 control_count = g->touch_mode ? ARRAY_SIZE(WC_TOUCH_CONTROLS) : ARRAY_SIZE(WC_CONTROLS);
-  HzUIElementDesc sd2 = wc_screen_desc(g, ui_id("MenuScreen"));
-  ui_element_of(&sd2) {
-    HzUIElementDesc pd8 = wc_panel_desc(ui_id("MenuPanel"), 460);
-    if (compact) pd8.layout.padding = (HzUIPadding){.left = 24, .right = 24, .top = 18, .bottom = 18};
-    ui_element_of(&pd8) {
-      wc_title("WebCraft", compact ? 30 : 44);
-      ui_element({.layout = {.margin = {.bottom = compact ? 6 : 12}}}) {
-        wc_muted("Shaders Edition \xe2\x80\x94 a voxel sandbox", 14);
-      }
-      const char *play = g->mode == WC_MODE_PAUSED ? "Resume" : g->touch_mode ? "Tap to Play" : "Click to Play";
-      if (wc_button(g, ui_id("PlayBtn"), play, WC_BTN_PLAY, true, true))
-        wc_game_lock(g);
-      ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .child_gap = 10}}) {
-        if (wc_button(g, ui_id("SettingsBtn"), "Settings", WC_BTN_SETTINGS, false, true)) {
-          g->settings_return = g->mode;
-          wc_game_set_mode(g, WC_MODE_SETTINGS);
-        }
-        if (wc_button(g, ui_id("NewWorldBtn"), "New World", WC_BTN_NEW_WORLD, false, true))
-          ui_interact_modal_open(&g->new_world_modal);
-      }
-      ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .layout_direction = UI_TOP_TO_BOTTOM,
-                             .child_gap = 3, .padding = {.top = compact ? 8 : 14}}}) {
-        for (u32 i = 0; i < control_count; i++) {
-          ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .child_gap = 14}}) {
-            ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(130)}}}) {
-              ui_text(wc_uis(controls[i].key),
-                      ui_text_config({.fontSize = 13, .weight = UI_FONT_SEMIBOLD, .textColor = WC_C_TEXT}));
-            }
-            ui_text(wc_uis(controls[i].what), ui_text_config({.fontSize = 13, .textColor = WC_C_MUTED}));
-          }
-        }
-      }
-      if (!compact) ui_element({.layout = {.padding = {.top = 14}}}) {
+  i32 control_count = g->touch_mode ? (i32)ARRAY_SIZE(WC_TOUCH_CONTROLS) : (i32)ARRAY_SIZE(WC_CONTROLS);
+  i32 bh = compact ? 1 : 3;
+  i32 title_h = compact ? 2 : WC_LOGO_H + 2;
+  i32 rows_left = (i32)t->rows - 2 - title_h - 2 * bh - 3;
+  i32 shown = MAX(0, MIN(control_count, rows_left - (compact ? 0 : 2)));
+  i32 h = 2 + title_h + 1 + 2 * bh + 1 + (shown ? shown + 1 : 0) + (compact ? 0 : 2);
+  wc_scrim(t);
+  WcRect p = wc_centred(t, MIN(MAX(62, WC_LOGO_W + 4), (i32)t->cols), h);
+  wc_panel(t, p);
+  i32 y = p.y + 1 + wc_title_block(t, p, p.y + 1, "a voxel sandbox") + 1;
+  const char *play = g->mode == WC_MODE_PAUSED ? "Resume" : g->touch_mode ? "Tap to Play" : "Click to Play";
+  if (wc_button(g, wc_tui_id("PlayBtn", 0), wc_rect(p.x + 2, y, p.w - 4, bh), play, true)) wc_game_lock(g);
+  y += bh;
+  i32 bw = (p.w - 5) / 2;
+  if (wc_button(g, wc_tui_id("SettingsBtn", 0), wc_rect(p.x + 2, y, bw, bh), "Settings", false)) {
+    g->settings_return = g->mode;
+    wc_game_set_mode(g, WC_MODE_SETTINGS);
+  }
+  if (wc_button(g, wc_tui_id("NewWorldBtn", 0), wc_rect(p.x + 3 + bw, y, bw, bh), "New World", false))
+    g->new_world_open = true;
+  y += bh + 1;
+  i32 key_w = g->touch_mode ? 12 : 20;
+  for (i32 i = 0; i < shown; i++) {
+    wc_tui_cstr(t, p.x + 2, y, controls[i].key, WC_C_TEXT);
+    String what = cstr_to_str(controls[i].what);
+    what.len = MIN(what.len, (u32)MAX(0, p.w - 4 - key_w));
+    wc_tui_text(t, p.x + 2 + key_w, y, what, WC_C_MUTED);
+    y++;
+  }
+  if (!compact) {
 #ifdef WASM
-        wc_muted("Renderer: WebGPU", 12);
+    wc_tui_cstr(t, p.x + 2, y + 1, "Renderer: WebGPU", WC_C_DIM);
 #else
-        wc_muted("Renderer: Direct3D 12", 12);
+    wc_tui_cstr(t, p.x + 2, y + 1, "Renderer: Direct3D 12", WC_C_DIM);
 #endif
-      }
-    }
   }
   wc_new_world_modal(g);
 }
 
 // ---- settings ----
 
-hz_internal void wc_setting_label(const char *label) {
-  ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(WC_SETTING_LABEL_W)}}}) {
-    ui_text(wc_uis(label), ui_text_config({.fontSize = 13, .textColor = WC_C_MUTED}));
-  }
+typedef struct {
+  WcGame *g;
+  i32 x, w;      // row columns
+  i32 y0;        // grid row of the first visible row
+  i32 first, n;  // first visible row index, visible row count
+  i32 row;       // index of the next row
+  b32 changed, custom;
+} WcRows;
+
+// the grid row of the next settings row, or false when it is scrolled out
+hz_internal b32 wc_row(WcRows *rs, i32 *y) {
+  i32 r = rs->row++;
+  if (r < rs->first || r >= rs->first + rs->n) return false;
+  *y = rs->y0 + r - rs->first;
+  return true;
 }
 
-hz_internal void wc_setting_value(String text) {
-  ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(WC_SETTING_VALUE_W)}}}) {
-    ui_text(wc_uistr(text),
-            ui_text_config({.fontSize = 13, .textColor = WC_C_TEXT, .textAlignment = UI_TEXT_ALIGN_RIGHT}));
-  }
+#define WC_LABEL_W 22
+#define WC_VALUE_W 9
+
+hz_internal void wc_section(WcRows *rs, const char *title) {
+  i32 y;
+  if (!wc_row(rs, &y)) return;
+  wc_tui_cstr(&rs->g->tui, rs->x, y, title, WC_C_ACCENT);
 }
 
-#define wc_setting_row(name, i)                                                                                \
-  ui_element({.id = ui_idi(name, i),                                                                           \
-              .layout = {.sizing = {.width = ui_sizing_grow(0), .height = ui_sizing_fixed(30)},                \
-                         .child_gap = 10,                                                                      \
-                         .child_alignment = {.y = UI_ALIGN_Y_CENTER}}})
-
-hz_internal String wc_slider_text(WcSliderId id, f32 v, f32 day_time) {
-  Allocator fa = wc_frame_alloc();
-  switch (id) {
-  case WC_SLIDER_RENDER_DISTANCE: return str_format(&fa, "% ch", fmt_u32((u32)(v + 0.5f)));
-  case WC_SLIDER_RENDER_SCALE:
-  case WC_SLIDER_VOLUME:
-  case WC_SLIDER_CLOUD_COVERAGE: return str_format(&fa, "%%", fmt_u32((u32)(v * 100 + 0.5f)), fmt_char('%'));
-  case WC_SLIDER_SHADOW_DISTANCE: return str_format(&fa, "% m", fmt_u32((u32)(v + 0.5f)));
-  case WC_SLIDER_FOV: return str_format(&fa, "%\xc2\xb0", fmt_u32((u32)(v + 0.5f)));
-  case WC_SLIDER_SENSITIVITY: return str_format(&fa, "%\xc3\x97", fmt_f32_p(v, 2));
-  case WC_SLIDER_DAY_LENGTH: return str_format(&fa, "% min", fmt_u32((u32)(v + 0.5f)));
-  case WC_SLIDER_TIME_OF_DAY: return wc_clock_string(day_time, &fa);
-  }
-  return STR_FROM_CSTR("");
+hz_internal void wc_row_label(WcRows *rs, i32 y, const char *label, b32 hot) {
+  String s = cstr_to_str(label);
+  s.len = MIN(s.len, (u32)(WC_LABEL_W - 1));
+  wc_tui_text(&rs->g->tui, rs->x, y, s, hot ? WC_C_TEXT : WC_C_MUTED);
 }
 
-// returns true when the user moved it; *value snaps to step
-hz_internal b32 wc_slider(WcGame *g, WcSliderId id, const char *label, f32 *value, f32 min, f32 max, f32 step) {
-  UIInteract_Slider *s = &g->sliders[id];
-  if (!s->drag.dragging) s->value = *value;
-  // from the current value: ui_interact_slider runs inside the thumb, after the fill is laid out
-  f32 thumb = max > min ? m_clampf((s->value - min) / (max - min), 0, 1) * (WC_SLIDER_TRACK_W - WC_SLIDER_THUMB_W) : 0;
+// a slider "[#####|......]  value": click or drag along it; *value snaps to step
+hz_internal b32 wc_slider(WcRows *rs, u32 index, const char *label, f32 *value, f32 min, f32 max, f32 step,
+                          String text) {
+  i32 y;
+  if (!wc_row(rs, &y)) return false;
+  WcTui *t = &rs->g->tui;
+  i32 tx = rs->x + WC_LABEL_W, tw = MAX(6, rs->w - WC_LABEL_W - WC_VALUE_W - 1);
+  WcRect track = wc_rect(tx, y, tw, 1);
+  WcTuiHit h = wc_tui_area(t, wc_tui_id("SliderTrack", index), track);
+  if (h.hovered || h.held) rs->g->cursor = OS_CURSOR_HAND;
   b32 changed = false;
-  wc_setting_row("SliderRow", id) {
-    wc_setting_label(label);
-    ui_element({.id = ui_idi("SliderTrack", id),
-                .layout = {.sizing = {.width = ui_sizing_fixed(WC_SLIDER_TRACK_W), .height = ui_sizing_fixed(4)}},
-                .background_color = {255, 255, 255, 38},
-                .corner_radius = ui_corner_radius(2)}) {
-      // filled part of the track
-      ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(thumb + WC_SLIDER_THUMB_W * 0.5f),
-                                        .height = ui_sizing_grow(0)}},
-                  .background_color = WC_C_ACCENT, .corner_radius = ui_corner_radius(2)}) {}
-      ui_element({.id = ui_idi("SliderThumb", id),
-                  .floating = {.attach_to = UI_ATTACH_TO_PARENT, .offset = {thumb, -5},
-                               .clip_to = UI_CLIP_TO_ATTACHED_PARENT},
-                  .layout = {.sizing = {.width = ui_sizing_fixed(WC_SLIDER_THUMB_W),
-                                        .height = ui_sizing_fixed(WC_SLIDER_THUMB_W)}},
-                  .background_color = s->drag.dragging ? (HzUIColor){170, 235, 150, 255} : WC_C_ACCENT,
-                  .corner_radius = ui_corner_radius(WC_SLIDER_THUMB_W * 0.5f)}) {
-        ui_interact_slider(s, min, max, WC_SLIDER_TRACK_W, WC_SLIDER_THUMB_W, &g->input);
-        if (ui_hovered() || s->drag.dragging) g->cursor = OS_CURSOR_HAND;
-      }
+  if (h.held && t->px >= 0 && max > min) {
+    f32 f = m_clampf((f32)(t->px - (tx + 1)) / (f32)MAX(1, tw - 3), 0, 1);
+    f32 v = m_clampf(min + m_floorf(f * (max - min) / step + 0.5f) * step, min, max);
+    if (v != *value) {
+      *value = v;
+      changed = true;
     }
-    if (s->changed) {
-      f32 v = min + m_floorf((s->value - min) / step + 0.5f) * step;
-      v = m_clampf(v, min, max);
-      if (v != *value) {
-        *value = v;
-        changed = true;
-      }
-    }
-    ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}}}) {}
-    wc_setting_value(wc_slider_text(id, *value, g->day_time));
   }
+  wc_row_label(rs, y, label, h.hovered || h.held);
+  i32 inner = tw - 2;
+  i32 knob = max > min ? (i32)(m_clampf((*value - min) / (max - min), 0, 1) * (f32)(inner - 1) + 0.5f) : 0;
+  u32 fg = h.hovered || h.held ? WC_C_HOVER : WC_C_ACCENT;
+  wc_tui_put(t, tx, y, '[', WC_C_DIM);
+  for (i32 i = 0; i < inner; i++)
+    wc_tui_put(t, tx + 1 + i, y, i == knob ? '|' : i < knob ? '#' : '.', i <= knob ? fg : WC_C_DIM);
+  wc_tui_put(t, tx + tw - 1, y, ']', WC_C_DIM);
+  wc_tui_text(t, tx + tw + 1, y, text, WC_C_TEXT);
   return changed;
 }
 
-hz_internal b32 wc_checkbox(WcGame *g, u32 index, const char *label, b32 *value) {
+hz_internal b32 wc_toggle(WcRows *rs, u32 index, const char *label, b32 *value) {
+  i32 y;
+  if (!wc_row(rs, &y)) return false;
+  WcTui *t = &rs->g->tui;
+  WcTuiHit h = wc_tui_area(t, wc_tui_id("Check", index), wc_rect(rs->x, y, WC_LABEL_W + 3, 1));
+  if (h.hovered) rs->g->cursor = OS_CURSOR_HAND;
   b32 changed = false;
-  wc_setting_row("CheckRow", index) {
-    wc_setting_label(label);
-    ui_element({.id = ui_idi("Check", index),
-                .layout = {.sizing = {.width = ui_sizing_fixed(18), .height = ui_sizing_fixed(18)},
-                           .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
-                .background_color = *value ? WC_C_ACCENT : (HzUIColor){255, 255, 255, 20},
-                .corner_radius = ui_corner_radius(4),
-                .border = {.color = *value ? WC_C_ACCENT : (HzUIColor){255, 255, 255, 60},
-                           .width = ui_border_outside(1)}}) {
-      if (ui_hovered()) g->cursor = OS_CURSOR_HAND;
-      if (wc_released_on(g)) {
-        *value = !*value;
-        changed = true;
-      }
-      if (*value) {
-        ui_text(ui_string("\xe2\x9c\x93"), ui_text_config({.fontSize = 13, .weight = UI_FONT_BOLD,
-                                                            .textColor = {12, 14, 20, 255}}));
-      }
-    }
+  if (h.clicked) {
+    *value = !*value;
+    changed = true;
   }
+  wc_row_label(rs, y, label, h.hovered);
+  u32 fg = h.hovered ? WC_C_HOVER : WC_C_ACCENT;
+  wc_tui_put(t, rs->x + WC_LABEL_W, y, '[', WC_C_DIM);
+  wc_tui_put(t, rs->x + WC_LABEL_W + 1, y, *value ? 'x' : ' ', fg);
+  wc_tui_put(t, rs->x + WC_LABEL_W + 2, y, ']', WC_C_DIM);
   return changed;
 }
 
-// returns the chosen option, or -1
-hz_internal i32 wc_dropdown(WcGame *g, WcDropdownId id, const char *label, const char *const *options, u32 count,
-                            u32 selected) {
-  UIInteract_Dropdown *dd = &g->dropdowns[id];
-  i32 picked = -1;
-  wc_setting_row("DropRow", id) {
-    wc_setting_label(label);
-    ui_element({.id = ui_idi("Drop", id),
-                .layout = {.sizing = {.width = ui_sizing_fixed(150), .height = ui_sizing_fixed(28)},
-                           .padding = {.left = 8, .right = 8},
-                           .child_alignment = {.y = UI_ALIGN_Y_CENTER}},
-                .background_color = WC_C_INSET,
-                .corner_radius = ui_corner_radius(6),
-                .border = {.color = {255, 255, 255, 38}, .width = ui_border_outside(1)}}) {
-      ui_interact_dropdown(dd, &g->input);
-      if (ui_hovered()) g->cursor = OS_CURSOR_HAND;
-      ui_text(wc_uis(options[selected]), ui_text_config({.fontSize = 13, .textColor = WC_C_TEXT}));
-      ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}}}) {}
-      ui_text(ui_string("\xe2\x96\xbe"), ui_text_config({.fontSize = 12, .textColor = WC_C_MUTED}));
-      if (dd->open) {
-        ui_element({.id = ui_idi("DropPopup", id),
-                    .floating = {.attach_to = UI_ATTACH_TO_PARENT,
-                                 .attach_points = {.parent = UI_ATTACH_POINT_LEFT_BOTTOM,
-                                                   .element = UI_ATTACH_POINT_LEFT_TOP},
-                                 .offset = {0, 4},
-                                 .z_index = 40},
-                    .layout = {.sizing = {.width = ui_sizing_fixed(150), .height = ui_sizing_fit(0)},
-                               .layout_direction = UI_TOP_TO_BOTTOM,
-                               .padding = ui_padding_all(4)},
-                    .background_color = WC_C_POPUP,
-                    .corner_radius = ui_corner_radius(6),
-                    .border = {.color = {255, 255, 255, 38}, .width = ui_border_outside(1)},
-                    .shadow = {.color = {0, 0, 0, 150}, .offset_y = 8, .blur = 24}}) {
-          ui_interact_dropdown_content(dd);
-          for (u32 i = 0; i < count; i++) {
-            // a desc is built before its element opens: ui_hovered() there would test the popup
-            HzUIElementId opt_id = ui_idi("DropOpt", id * 16 + i);
-            ui_element({.id = opt_id,
-                        .layout = {.sizing = {.width = ui_sizing_grow(0), .height = ui_sizing_fixed(26)},
-                                   .padding = {.left = 8, .right = 8},
-                                   .child_alignment = {.y = UI_ALIGN_Y_CENTER}},
-                        .background_color =
-                            ui_pointer_over(opt_id) ? (HzUIColor){255, 255, 255, 26} : (HzUIColor){0, 0, 0, 0},
-                        .corner_radius = ui_corner_radius(4)}) {
-              if (ui_hovered()) g->cursor = OS_CURSOR_HAND;
-              if (ui_interact_dropdown_option(dd, &g->input, i == selected)) picked = (i32)i;
-              ui_text(wc_uis(options[i]),
-                      ui_text_config({.fontSize = 13, .textColor = i == selected ? WC_C_ACCENT : WC_C_TEXT}));
-            }
-          }
-        }
-      }
-    }
-  }
-  return picked;
-}
-
-hz_internal void wc_section(const char *title) {
-  ui_element({.layout = {.padding = {.top = 14, .bottom = 2}}}) {
-    ui_text(wc_uis(title), ui_text_config({.fontSize = 12, .weight = UI_FONT_SEMIBOLD, .letterSpacing = 1.5f,
-                                           .textColor = WC_C_ACCENT}));
-  }
+// a cycle button "< Fancy >": the arrows step back and forward, the name steps forward; returns the new option or -1
+hz_internal i32 wc_cycle(WcRows *rs, u32 index, const char *label, const char *const *options, u32 count,
+                         u32 selected) {
+  i32 y;
+  if (!wc_row(rs, &y)) return -1;
+  WcTui *t = &rs->g->tui;
+  i32 x = rs->x + WC_LABEL_W, w = 16;
+  WcTuiHit back = wc_tui_area(t, wc_tui_id("CycleBack", index), wc_rect(x, y, 2, 1));
+  WcTuiHit fwd = wc_tui_area(t, wc_tui_id("Cycle", index), wc_rect(x + 2, y, w - 2, 1));
+  if (back.hovered || fwd.hovered) rs->g->cursor = OS_CURSOR_HAND;
+  wc_row_label(rs, y, label, back.hovered || fwd.hovered);
+  wc_tui_put(t, x, y, '<', back.hovered ? WC_C_HOVER : WC_C_DIM);
+  wc_tui_put(t, x + w - 1, y, '>', fwd.hovered ? WC_C_HOVER : WC_C_DIM);
+  wc_tui_center(t, wc_rect(x + 1, y, w - 2, 1), y, cstr_to_str(options[selected % count]),
+                fwd.hovered ? WC_C_HOVER : WC_C_TEXT);
+  if (back.clicked) return (i32)((selected + count - 1) % count);
+  if (fwd.clicked) return (i32)((selected + 1) % count);
+  return -1;
 }
 
 hz_internal const char *const WC_PRESET_NAMES[] = {"Low", "Medium", "High", "Ultra", "Custom"};
 hz_internal const char *const WC_SHADOW_RES_NAMES[] = {"1024", "2048", "3072", "4096"};
 hz_internal const char *const WC_CLOUD_NAMES[] = {"Off", "Fast", "Fancy"};
 hz_internal const char *const WC_WEATHER_NAMES[] = {"Dynamic", "Always clear", "Rain"};
+hz_internal const char *const WC_TEXT_SIZE_NAMES[] = {"Large", "Medium", "Small"};
+hz_internal const char *const WC_TINT_NAMES[] = {"Black", "Faint", "Full"};
+hz_internal const char *const WC_PALETTE_NAMES[] = {"Colour", "Phosphor", "Amber"};
 
-hz_internal void wc_settings_screen(WcGame *g, f32 viewport_h) {
+#define WC_SETTINGS_ROWS 27
+
+hz_internal void wc_settings_rows(WcRows *rs) {
+  WcGame *g = rs->g;
   WcSettings *s = &g->settings;
-  b32 changed = false, custom = false;
-  HzUIElementDesc sd3 = wc_screen_desc(g, ui_id("SettingsScreen"));
-  ui_element_of(&sd3) {
-    ui_element({.id = ui_id("SettingsPanel"),
-                .layout = {.sizing = {.width = ui_sizing_fixed(560),
-                                      .height = ui_sizing_fit(0, m_maxf(240.0f, viewport_h * 0.9f))},
-                           .layout_direction = UI_TOP_TO_BOTTOM,
-                           .padding = {.left = 32, .right = 32, .top = 28, .bottom = 28},
-                           .child_gap = 8},
-                .background_color = WC_C_PANEL,
-                .corner_radius = ui_corner_radius(16),
-                .corner_smoothing = 0.6f,
-                .border = {.color = WC_C_PANEL_BORDER, .width = ui_border_outside(1)},
-                .shadow = {.color = {0, 0, 0, 128}, .offset_y = 20, .blur = 60}}) {
-      wc_title("Settings", 30);
-      // by id: a desc is built before its element opens, so ui_scroll_offset() would read the panel's
-      HzUIElementId body_id = ui_id("SettingsBody");
-      ui_element({.id = body_id,
-                  .layout = {.sizing = {.width = ui_sizing_grow(0), .height = ui_sizing_grow(0)},
-                             .layout_direction = UI_TOP_TO_BOTTOM,
-                             .child_gap = 6,
-                             .padding = {.right = 8}},
-                  .clip = {.vertical = true, .child_offset = ui_scroll_offset_for(body_id)}}) {
-        wc_section("GRAPHICS");
-        i32 p = wc_dropdown(g, WC_DROPDOWN_PRESET, "Quality preset", WC_PRESET_NAMES, ARRAY_SIZE(WC_PRESET_NAMES),
-                            s->preset);
-        if (p >= 0) {
-          wc_settings_apply_preset(s, (WcPreset)p);
-          s->preset = (WcPreset)p;
-          changed = true;
-        }
-        f32 rd = (f32)s->render_distance;
-        if (wc_slider(g, WC_SLIDER_RENDER_DISTANCE, "Render distance", &rd, 4, 24, 1)) {
-          s->render_distance = (u32)rd;
-          changed = custom = true;
-        }
-        if (wc_slider(g, WC_SLIDER_RENDER_SCALE, "Render scale", &s->render_scale, 0.5f, 1.0f, 0.05f))
-          changed = custom = true;
-        if (wc_checkbox(g, 0, "Shadows", &s->shadows)) changed = custom = true;
-        u32 res_idx = s->shadow_res <= 1024 ? 0 : s->shadow_res <= 2048 ? 1 : s->shadow_res <= 3072 ? 2 : 3;
-        i32 r = wc_dropdown(g, WC_DROPDOWN_SHADOW_RES, "Shadow resolution", WC_SHADOW_RES_NAMES,
-                            ARRAY_SIZE(WC_SHADOW_RES_NAMES), res_idx);
-        if (r >= 0) {
-          s->shadow_res = 1024 * (u32)(r + 1);
-          changed = custom = true;
-        }
-        if (wc_slider(g, WC_SLIDER_SHADOW_DISTANCE, "Shadow distance", &s->shadow_distance, 48, 256, 16))
-          changed = custom = true;
-        if (wc_checkbox(g, 1, "Ambient occlusion (SSAO)", &s->ssao)) changed = custom = true;
-        if (wc_checkbox(g, 2, "Volumetric light", &s->volumetrics)) changed = custom = true;
-        i32 c = wc_dropdown(g, WC_DROPDOWN_CLOUDS, "Clouds", WC_CLOUD_NAMES, ARRAY_SIZE(WC_CLOUD_NAMES), s->clouds);
-        if (c >= 0) {
-          s->clouds = (u32)c;
-          changed = custom = true;
-        }
-        if (wc_checkbox(g, 3, "Water reflections (SSR)", &s->ssr)) changed = custom = true;
-        if (wc_checkbox(g, 4, "Temporal anti-aliasing", &s->taa)) changed = custom = true;
-        if (wc_checkbox(g, 5, "Bloom", &s->bloom)) changed = custom = true;
-        wc_section("GAME");
-        if (wc_slider(g, WC_SLIDER_FOV, "Field of view", &s->fov, 50, 110, 1)) changed = custom = true;
-        if (wc_slider(g, WC_SLIDER_SENSITIVITY, "Mouse sensitivity", &s->sensitivity, 0.2f, 3.0f, 0.05f))
-          changed = custom = true;
-        if (wc_checkbox(g, 6, "View bobbing", &s->bobbing)) changed = custom = true;
-        if (wc_slider(g, WC_SLIDER_VOLUME, "Volume", &s->volume, 0, 1, 0.05f)) changed = custom = true;
-        if (wc_slider(g, WC_SLIDER_DAY_LENGTH, "Day length", &s->day_length, 2, 60, 1)) changed = custom = true;
-        if (wc_slider(g, WC_SLIDER_CLOUD_COVERAGE, "Cloud coverage", &s->cloud_coverage, 0, 1, 0.05f))
-          changed = custom = true;
-        i32 wmode = wc_dropdown(g, WC_DROPDOWN_WEATHER, "Weather", WC_WEATHER_NAMES, ARRAY_SIZE(WC_WEATHER_NAMES),
-                                s->weather);
-        if (wmode >= 0) {
-          s->weather = (WcWeatherMode)wmode;
-          changed = true;
-        }
-        wc_slider(g, WC_SLIDER_TIME_OF_DAY, "Time of day", &g->day_time, 0, 1, 0.005f);
-      }
-      if (wc_button(g, ui_id("SettingsDoneBtn"), "Done", WC_BTN_SETTINGS_DONE, true, true)) {
-        wc_game_apply_settings(g);
-        wc_game_set_mode(g, g->settings_return == WC_MODE_PLAYING ? WC_MODE_PAUSED : g->settings_return);
-      }
-    }
+  Allocator fa = wc_frame_alloc();
+  wc_section(rs, "GRAPHICS");
+  i32 p = wc_cycle(rs, 0, "Quality preset", WC_PRESET_NAMES, ARRAY_SIZE(WC_PRESET_NAMES), s->preset);
+  // custom shows but is never stepped onto: any other change is what lands there
+  if (p == WC_PRESET_CUSTOM) p = s->preset == WC_PRESET_ULTRA ? WC_PRESET_LOW : WC_PRESET_ULTRA;
+  if (p >= 0) {
+    wc_settings_apply_preset(s, (WcPreset)p);
+    s->preset = (WcPreset)p;
+    rs->changed = true;
   }
-  if (custom) s->preset = WC_PRESET_CUSTOM;
-  if (changed) wc_game_apply_settings(g);
+  f32 rd = (f32)s->render_distance;
+  if (wc_slider(rs, 0, "Render distance", &rd, 4, 24, 1, str_format(&fa, "% ch", fmt_u32(s->render_distance)))) {
+    s->render_distance = (u32)rd;
+    rs->changed = rs->custom = true;
+  }
+  if (wc_slider(rs, 1, "Render scale", &s->render_scale, 0.5f, 1.0f, 0.05f,
+                str_format(&fa, "%%", fmt_u32((u32)(s->render_scale * 100 + 0.5f)), fmt_char('%'))))
+    rs->changed = rs->custom = true;
+  if (wc_toggle(rs, 0, "Shadows", &s->shadows)) rs->changed = rs->custom = true;
+  u32 res_idx = s->shadow_res <= 1024 ? 0 : s->shadow_res <= 2048 ? 1 : s->shadow_res <= 3072 ? 2 : 3;
+  i32 r = wc_cycle(rs, 1, "Shadow resolution", WC_SHADOW_RES_NAMES, ARRAY_SIZE(WC_SHADOW_RES_NAMES), res_idx);
+  if (r >= 0) {
+    s->shadow_res = 1024 * (u32)(r + 1);
+    rs->changed = rs->custom = true;
+  }
+  if (wc_slider(rs, 2, "Shadow distance", &s->shadow_distance, 48, 256, 16,
+                str_format(&fa, "% m", fmt_u32((u32)(s->shadow_distance + 0.5f)))))
+    rs->changed = rs->custom = true;
+  if (wc_toggle(rs, 1, "Ambient occlusion", &s->ssao)) rs->changed = rs->custom = true;
+  if (wc_toggle(rs, 2, "Volumetric light", &s->volumetrics)) rs->changed = rs->custom = true;
+  i32 c = wc_cycle(rs, 2, "Clouds", WC_CLOUD_NAMES, ARRAY_SIZE(WC_CLOUD_NAMES), s->clouds);
+  if (c >= 0) {
+    s->clouds = (u32)c;
+    rs->changed = rs->custom = true;
+  }
+  if (wc_toggle(rs, 3, "Water reflections", &s->ssr)) rs->changed = rs->custom = true;
+  if (wc_toggle(rs, 4, "Temporal AA", &s->taa)) rs->changed = rs->custom = true;
+  if (wc_toggle(rs, 5, "Bloom", &s->bloom)) rs->changed = rs->custom = true;
+  wc_section(rs, "TEXT MODE");
+  i32 ts = wc_cycle(rs, 3, "Text size", WC_TEXT_SIZE_NAMES, WC_TEXT_SIZES, s->text_size);
+  if (ts >= 0) {
+    s->text_size = (u32)ts;
+    rs->changed = true;
+  }
+  i32 ti = wc_cycle(rs, 4, "Background tint", WC_TINT_NAMES, WC_TINTS, s->ascii_tint);
+  if (ti >= 0) {
+    s->ascii_tint = (u32)ti;
+    rs->changed = true;
+  }
+  if (wc_toggle(rs, 6, "Glow", &s->ascii_glow)) rs->changed = true;
+  i32 pa = wc_cycle(rs, 5, "Palette", WC_PALETTE_NAMES, WC_PALETTES, s->ascii_palette);
+  if (pa >= 0) {
+    s->ascii_palette = (u32)pa;
+    rs->changed = true;
+  }
+  wc_section(rs, "GAME");
+  if (wc_slider(rs, 3, "Field of view", &s->fov, 50, 110, 1, str_format(&fa, "% deg", fmt_u32((u32)(s->fov + 0.5f)))))
+    rs->changed = rs->custom = true;
+  if (wc_slider(rs, 4, "Mouse sensitivity", &s->sensitivity, 0.2f, 3.0f, 0.05f,
+                str_format(&fa, "%x", fmt_f32_p(s->sensitivity, 2))))
+    rs->changed = rs->custom = true;
+  if (wc_toggle(rs, 7, "View bobbing", &s->bobbing)) rs->changed = rs->custom = true;
+  if (wc_slider(rs, 5, "Volume", &s->volume, 0, 1, 0.05f,
+                str_format(&fa, "%%", fmt_u32((u32)(s->volume * 100 + 0.5f)), fmt_char('%'))))
+    rs->changed = rs->custom = true;
+  if (wc_slider(rs, 6, "Day length", &s->day_length, 2, 60, 1,
+                str_format(&fa, "% min", fmt_u32((u32)(s->day_length + 0.5f)))))
+    rs->changed = rs->custom = true;
+  if (wc_slider(rs, 7, "Cloud coverage", &s->cloud_coverage, 0, 1, 0.05f,
+                str_format(&fa, "%%", fmt_u32((u32)(s->cloud_coverage * 100 + 0.5f)), fmt_char('%'))))
+    rs->changed = rs->custom = true;
+  i32 wm = wc_cycle(rs, 6, "Weather", WC_WEATHER_NAMES, ARRAY_SIZE(WC_WEATHER_NAMES), s->weather);
+  if (wm >= 0) {
+    s->weather = (WcWeatherMode)wm;
+    rs->changed = true;
+  }
+  wc_slider(rs, 8, "Time of day", &g->day_time, 0, 1, 0.005f, wc_clock_string(g->day_time, &fa));
+}
+
+hz_internal void wc_settings_screen(WcGame *g) {
+  WcTui *t = &g->tui;
+  WcSettings *s = &g->settings;
+  b32 compact = t->rows < 30;
+  i32 bh = compact ? 1 : 3;
+  wc_scrim(t);
+  WcRect p = wc_centred(t, MIN(60, (i32)t->cols), MIN((i32)t->rows, WC_SETTINGS_ROWS + 6 + bh));
+  wc_panel(t, p);
+  wc_tui_cstr(t, p.x + 2, p.y + 1, "Settings", WC_C_TEXT);
+  i32 list_y = p.y + 3, list_n = MAX(1, p.h - 5 - bh);
+  i32 max_first = MAX(0, WC_SETTINGS_ROWS - list_n);
+  // the wheel over the list scrolls it; the arrows do the same for touch
+  WcRect list = wc_rect(p.x + 1, list_y, p.w - 2, list_n);
+  WcTuiHit lh = wc_tui_area(t, wc_tui_id("SettingsBody", 0), list);
+  if (lh.hovered || wc_rect_has(list, t->px, t->py)) g->settings_scroll += (i32)(t->scroll * 3.0f);
+  g->settings_scroll = MAX(0, MIN(g->settings_scroll, max_first));
+  WcRows rs = {.g = g, .x = p.x + 2, .w = p.w - 4, .y0 = list_y, .first = g->settings_scroll, .n = list_n};
+  wc_settings_rows(&rs);
+  if (rs.row != WC_SETTINGS_ROWS) log_warn("settings: % rows, WC_SETTINGS_ROWS is wrong", fmt_u32((u32)rs.row));
+  if (g->settings_scroll > 0) {
+    WcRect up = wc_rect(p.x + p.w - 8, p.y + 1, 6, 1);
+    WcTuiHit h = wc_tui_area(t, wc_tui_id("SettingsUp", 0), up);
+    wc_tui_cstr(t, up.x, up.y, "^ more", h.hovered ? WC_C_HOVER : WC_C_DIM);
+    if (h.clicked) g->settings_scroll = MAX(0, g->settings_scroll - list_n / 2);
+  }
+  if (g->settings_scroll < max_first) {
+    WcRect dn = wc_rect(p.x + p.w - 8, list_y + list_n, 6, 1);
+    WcTuiHit h = wc_tui_area(t, wc_tui_id("SettingsDown", 0), dn);
+    wc_tui_cstr(t, dn.x, dn.y, "v more", h.hovered ? WC_C_HOVER : WC_C_DIM);
+    if (h.clicked) g->settings_scroll = MIN(max_first, g->settings_scroll + list_n / 2);
+  }
+  if (wc_button(g, wc_tui_id("SettingsDoneBtn", 0), wc_rect(p.x + 2, p.y + p.h - 1 - bh, p.w - 4, bh), "Done", true)) {
+    wc_game_apply_settings(g);
+    wc_game_set_mode(g, g->settings_return == WC_MODE_PLAYING ? WC_MODE_PAUSED : g->settings_return);
+  }
+  if (rs.custom) s->preset = WC_PRESET_CUSTOM;
+  if (rs.changed) wc_game_apply_settings(g);
 }
 
 // ---- inventory ----
 
+hz_internal void wc_icon(WcTui *t, const WcIcon *ic, i32 x, i32 y) {
+  for (i32 r = 0; r < WC_ICON_H; r++)
+    for (i32 c = 0; c < WC_ICON_W; c++) {
+      u32 i = (u32)(r * WC_ICON_W + c);
+      if (!ic->glyph[i]) continue;
+      wc_tui_fill(t, wc_rect(x + c, y + r, 1, 1), ic->back[i], 255);
+      wc_tui_put(t, x + c, y + r, (char)(ic->glyph[i] + 32), ic->colour[i]);
+    }
+}
+
 hz_internal void wc_inventory_screen(WcGame *g) {
-  HzUIElementDesc sd4 = wc_screen_desc(g, ui_id("InventoryScreen"));
-  ui_element_of(&sd4) {
-    b32 compact = (f32)g->ui->canvas_height < WC_COMPACT_H;
-    // compact: wider and shorter, so all 72 blocks fit a landscape phone without scrolling
-    u32 cols = compact ? 16 : WC_INV_COLS;
-    f32 cell = compact ? 40.0f : WC_INV_CELL, gap = compact ? 4.0f : WC_INV_GAP, icon = compact ? 30.0f : 42.0f;
-    HzUIElementDesc pd9 = wc_panel_desc(ui_id("InventoryPanel"), 0);
-    if (compact) pd9.layout.padding = (HzUIPadding){.left = 20, .right = 20, .top = 14, .bottom = 14};
-    ui_element_of(&pd9) {
-      wc_title("Blocks", compact ? 22 : 28);
-      wc_muted(g->touch_mode ? "Tap a block to put it in the selected hotbar slot."
-                             : "Click a block to put it in the selected hotbar slot. Press E or Esc to close.",
-               14);
-      f32 grid_w = cols * cell + (cols - 1) * gap;
-      i32 hovered = -1;
-      ui_element({.id = ui_id("InventoryGrid"),
-                  .layout = {.sizing = {.width = ui_sizing_fixed(grid_w)},
-                             .layout_direction = UI_LEFT_TO_RIGHT_WRAP,
-                             .child_gap = (u16)gap,
-                             .padding = {.top = compact ? 6 : 12}}}) {
-        for (u32 i = 0; i < WC_INVENTORY_COUNT; i++) {
-          u8 id = wc_inventory_order[i];
-          HzUIElementId eid = ui_idi("InvItem", i);
-          b32 hot = g->inv_hover == i + 1;
-          ui_element({.id = eid,
-                      .layout = {.sizing = {.width = ui_sizing_fixed(cell), .height = ui_sizing_fixed(cell)},
-                                 .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER},
-                                 .margin = {.bottom = (u16)gap}},
-                      .background_color = hot ? (HzUIColor){255, 255, 255, 46} : (HzUIColor){255, 255, 255, 15},
-                      .corner_radius = ui_corner_radius(8),
-                      .border = {.color = hot ? (HzUIColor){255, 255, 255, 255} : (HzUIColor){255, 255, 255, 26},
-                                 .width = ui_border_outside(1)}}) {
-            UIInteract a = ui_interact(&g->input);
-            if (a.hovered) {
-              hovered = (i32)i;
-              g->cursor = OS_CURSOR_HAND;
-            }
-            if (a.clicked) {
-              g->hotbar[g->selected] = id;
-              wc_game_toast(g, wc_block_label[id]);
-            }
-            ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(icon), .height = ui_sizing_fixed(icon)}},
-                        .image = {.texture = g->icons[id]},
-                        .aspect_ratio = {1.0f}}) {}
-          }
-        }
-      }
-      g->inv_hover = hovered >= 0 ? (u32)hovered + 1 : 0;
-      // no keyboard to close it with: a button, and the label row gives way to it
-      if (g->touch_mode) {
-        ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .margin = {.top = 4}}}) {
-          if (wc_button(g, ui_id("InventoryDoneBtn"), "Done", WC_BTN_INVENTORY_DONE, true, true)) wc_game_lock(g);
-        }
-      } else {
-        ui_element({.layout = {.sizing = {.height = ui_sizing_fixed(20)}, .margin = {.top = 4}}}) {
-          if (hovered >= 0)
-            ui_text(wc_uis(wc_block_label[wc_inventory_order[hovered]]),
-                    ui_text_config({.fontSize = 13, .textColor = WC_C_MUTED}));
-        }
+  WcTui *t = &g->tui;
+  // an item is its icon plus one cell of gap on the right and below
+  i32 cols = MIN(18, ((i32)t->cols - 6) / (WC_ICON_W + 1));
+  i32 rows = (WC_INVENTORY_COUNT + cols - 1) / cols;
+  i32 grid_w = cols * (WC_ICON_W + 1) - 1, grid_h = rows * (WC_ICON_H + 1) - 1;
+  WcRect p = wc_centred(t, MAX(grid_w + 4, 30), grid_h + 9);
+  wc_scrim(t);
+  wc_panel(t, p);
+  wc_tui_cstr(t, p.x + 2, p.y + 1, "Blocks", WC_C_TEXT);
+  String hint = g->touch_mode ? STR_FROM_CSTR("Tap a block to put it in the selected hotbar slot.")
+                              : STR_FROM_CSTR("Click a block to put it in the selected slot. E or Esc closes.");
+  hint.len = MIN(hint.len, (u32)MAX(0, p.w - 4));
+  wc_tui_text(t, p.x + 2, p.y + 2, hint, WC_C_MUTED);
+  i32 gx = p.x + (p.w - grid_w) / 2, gy = p.y + 4;
+  i32 hovered = -1;
+  for (i32 i = 0; i < WC_INVENTORY_COUNT; i++) {
+    u8 id = wc_inventory_order[i];
+    WcRect cell = wc_rect(gx + (i % cols) * (WC_ICON_W + 1), gy + (i / cols) * (WC_ICON_H + 1), WC_ICON_W, WC_ICON_H);
+    WcTuiHit h = wc_tui_area(t, wc_tui_id("InvItem", (u32)i), cell);
+    if (h.hovered) {
+      hovered = i;
+      g->cursor = OS_CURSOR_HAND;
+      // brackets in the gap columns: the icon's own background fills the cell
+      for (i32 r = 0; r < WC_ICON_H; r++) {
+        wc_tui_put(t, cell.x - 1, cell.y + r, '[', WC_C_HOVER);
+        wc_tui_put(t, cell.x + WC_ICON_W, cell.y + r, ']', WC_C_HOVER);
       }
     }
+    if (h.clicked) {
+      g->hotbar[g->selected] = id;
+      wc_game_toast(g, wc_block_label[id]);
+    }
+    wc_icon(t, &g->icons[id], cell.x, cell.y);
+  }
+  i32 by = p.y + p.h - 2;
+  if (g->touch_mode) {
+    if (wc_button(g, wc_tui_id("InventoryDoneBtn", 0), wc_rect(p.x + 2, by, p.w - 4, 1), "Done", true)) wc_game_lock(g);
+  } else if (hovered >= 0) {
+    wc_tui_cstr(t, p.x + 2, by, wc_block_label[wc_inventory_order[hovered]], WC_C_TEXT);
   }
 }
 
 // ---- error ----
 
 hz_internal void wc_error_screen(WcGame *g) {
-  HzUIElementDesc sd5 = wc_screen_desc(g, ui_id("ErrorScreen"));
-  ui_element_of(&sd5) {
-    HzUIElementDesc pd10 = wc_panel_desc(ui_id("ErrorPanel"), 720);
-    ui_element_of(&pd10) {
-      wc_title("Something went wrong", 28);
-      ui_text(wc_uis(g->error_text ? g->error_text : ""),
-              ui_text_config({.fontSize = 12, .textColor = {255, 180, 180, 255}, .lineHeight = 17,
-                              .wrapMode = UI_TEXT_WRAP_WORDS}));
-    }
-  }
+  WcTui *t = &g->tui;
+  String msg = cstr_to_str(g->error_text ? g->error_text : "");
+  i32 w = MIN(80, (i32)t->cols);
+  i32 rows = MIN(wc_tui_wrap_rows(msg, w - 4), (i32)t->rows - 6);
+  WcRect p = wc_centred(t, w, rows + 5);
+  wc_scrim(t);
+  wc_panel(t, p);
+  wc_tui_cstr(t, p.x + 2, p.y + 1, "Something went wrong", WC_C_TEXT);
+  wc_tui_wrap(t, wc_rect(p.x + 2, p.y + 3, p.w - 4, rows), msg, WC_C_ERROR);
 }
 
 // ---- hud ----
 
-// the web page's "Made with Kaigen" link owns the top-right corner above this
-#define WC_BADGE_CLEAR 66.0f
-#define WC_TOUCH_SIDE 44.0f // clears the notch of a phone held in landscape
-#define WC_TOUCH_BOTTOM 22.0f
-
-// a round on-screen button; `lit` while held or toggled on
-hz_internal void wc_touch_button(HzUIElementId id, const char *label, f32 size, v2 offset, b32 lit) {
-  ui_element({.id = id,
-              .floating = {.attach_to = UI_ATTACH_TO_ROOT,
-                           .attach_points = {.element = UI_ATTACH_POINT_RIGHT_BOTTOM,
-                                             .parent = UI_ATTACH_POINT_RIGHT_BOTTOM},
-                           .offset = {offset.x, offset.y},
-                           .z_index = 5,
-                           .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
-              .layout = {.sizing = {.width = ui_sizing_fixed(size), .height = ui_sizing_fixed(size)},
-                         .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
-              .background_color = lit ? (HzUIColor){255, 255, 255, 90} : (HzUIColor){10, 12, 16, 110},
-              .corner_radius = ui_corner_radius(size * 0.5f),
-              .border = {.color = {255, 255, 255, lit ? 220 : 90}, .width = ui_border_outside(2)}}) {
-    ui_text(wc_uis(label), ui_text_config({.fontSize = 13, .weight = UI_FONT_SEMIBOLD, .textColor = WC_C_TEXT}));
-  }
-}
-
-// stick, jump, sneak and menu, laid out for a phone in landscape; wc_touch_update hit-tests these ids
-hz_internal void wc_touch_hud(WcGame *g) {
-  const WcTouch *t = &g->touch;
-  f32 h = (f32)g->ui->canvas_height;
-  b32 stick = wc_touch_stick_active(t);
-  // the stick sits where the thumb landed; idle, a faint ring shows where to put it
-  v2 center = stick ? t->stick_center : (v2){WC_TOUCH_SIDE + 90, h - WC_TOUCH_BOTTOM - 90};
-  v2 knob = stick ? t->stick_knob : center;
-  const f32 base = 132, nub = 56;
-  ui_element({.id = ui_id("TouchStickBase"),
-              .floating = {.attach_to = UI_ATTACH_TO_ROOT, .offset = {center.x - base * 0.5f, center.y - base * 0.5f},
-                           .z_index = 4, .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
-              .layout = {.sizing = {.width = ui_sizing_fixed(base), .height = ui_sizing_fixed(base)}},
-              .background_color = {10, 12, 16, stick ? 90 : 40},
-              .corner_radius = ui_corner_radius(base * 0.5f),
-              .border = {.color = {255, 255, 255, stick ? 110 : 50}, .width = ui_border_outside(2)}}) {}
-  ui_element({.id = ui_id("TouchStickKnob"),
-              .floating = {.attach_to = UI_ATTACH_TO_ROOT, .offset = {knob.x - nub * 0.5f, knob.y - nub * 0.5f},
-                           .z_index = 5, .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
-              .layout = {.sizing = {.width = ui_sizing_fixed(nub), .height = ui_sizing_fixed(nub)}},
-              .background_color = {255, 255, 255, stick ? 150 : 60},
-              .corner_radius = ui_corner_radius(nub * 0.5f)}) {}
-
-  wc_touch_button(ui_id("TouchJump"), "Jump", 76, (v2){-WC_TOUCH_SIDE, -WC_TOUCH_BOTTOM}, t->jump_held);
-  b32 flying = g->player.flying;
-  wc_touch_button(ui_id("TouchSneak"), flying ? "Down" : "Sneak", 60, (v2){-WC_TOUCH_SIDE - 8, -WC_TOUCH_BOTTOM - 92},
-                  flying ? t->sneak_held : t->sneak_on);
-
-  ui_element({.id = ui_id("TouchPause"),
-              .floating = {.attach_to = UI_ATTACH_TO_ROOT,
-                           .attach_points = {.element = UI_ATTACH_POINT_RIGHT_TOP, .parent = UI_ATTACH_POINT_RIGHT_TOP},
-                           .offset = {-WC_TOUCH_SIDE, WC_BADGE_CLEAR},
-                           .z_index = 6,
-                           .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
-              .layout = {.padding = {.left = 16, .right = 16, .top = 10, .bottom = 10}},
-              .background_color = {10, 12, 16, 140},
-              .corner_radius = ui_corner_radius(10),
-              .border = {.color = {255, 255, 255, 60}, .width = ui_border_outside(1)}}) {
-    ui_text(ui_string("Menu"), ui_text_config({.fontSize = 14, .weight = UI_FONT_SEMIBOLD, .textColor = WC_C_TEXT}));
-  }
-}
-
 // touch devices play in landscape: portrait gets this instead of the game's screens
 hz_internal void wc_rotate_prompt(WcGame *g) {
-  HzUIElementDesc sd = wc_screen_desc(g, ui_id("RotateScreen"));
-  sd.floating.z_index = 40;
-  ui_element_of(&sd) {
-    HzUIElementDesc pd = wc_panel_desc(ui_id("RotatePanel"), 0);
-    ui_element_of(&pd) {
-      wc_title("Rotate your phone", 24);
-      wc_muted("WebCraft plays in landscape.", 14);
+  WcTui *t = &g->tui;
+  wc_tui_fill(t, wc_rect(0, 0, (i32)t->cols, (i32)t->rows), 0, 200);
+  WcRect p = wc_centred(t, MIN(32, (i32)t->cols), 5);
+  wc_panel(t, p);
+  wc_tui_center(t, p, p.y + 1, STR_FROM_CSTR("Rotate your phone"), WC_C_TEXT);
+  wc_tui_center(t, p, p.y + 3, STR_FROM_CSTR("ASCIICRAFT plays in landscape."), WC_C_MUTED);
+}
+
+// rows the web page's corner link covers at the top right
+hz_internal i32 wc_badge_rows(const WcTui *t) { return (i32)m_ceilf(WC_BADGE_CLEAR / m_maxf(t->ch, 1.0f)); }
+
+// a one-row touch button "( JUMP )"; lit while held or toggled on
+hz_internal void wc_touch_button(WcTui *t, u32 id, i32 x, i32 y, const char *label, b32 lit) {
+  i32 w = (i32)cstr_len(label) + 4;
+  WcRect r = wc_rect(x - w, y, w, 1);
+  wc_tui_area(t, id, r);
+  wc_tui_fill(t, r, lit ? 0x8A8F9Au : 0x0A0C10u, lit ? 220 : 150);
+  u32 fg = lit ? 0x0A0C10u : WC_C_TEXT;
+  wc_tui_put(t, r.x, y, '(', fg);
+  wc_tui_put(t, r.x + w - 1, y, ')', fg);
+  wc_tui_cstr(t, r.x + 2, y, label, fg);
+}
+
+// stick, jump, sneak and menu for a phone in landscape; wc_touch_update hit-tests these ids
+hz_internal void wc_touch_hud(WcGame *g) {
+  WcTui *t = &g->tui;
+  const WcTouch *tc = &g->touch;
+  b32 stick = wc_touch_stick_active(tc);
+  // idle, a faint ring shows where to put the thumb
+  f32 rest_x = t->ox + t->cw * 7.5f, rest_y = t->oy + t->ch * ((f32)t->rows - 5.5f);
+  v2 center = stick ? tc->stick_center : (v2){rest_x, rest_y};
+  v2 knob = stick ? tc->stick_knob : center;
+  i32 cx, cy, kx, ky;
+  if (wc_tui_cell_at(t, center.x, center.y, &cx, &cy)) {
+    // the ring's radius is the stick's travel in cells; cells are taller than wide
+    f32 rx = 56.0f / t->cw, ry = 56.0f / t->ch;
+    u32 ring = stick ? 0xD0D4DCu : 0x8A8F9Au;
+    // dark backed so the ring reads over a bright scene
+    for (i32 a = 0; a < 32; a++) {
+      f32 ang = (f32)a * (2.0f * PI / 32.0f);
+      i32 x = cx + (i32)m_roundf(m_cosf(ang) * rx), y = cy + (i32)m_roundf(m_sinf(ang) * ry);
+      wc_tui_fill(t, wc_rect(x, y, 1, 1), 0x0A0C10u, 170);
+      wc_tui_put(t, x, y, 'o', ring);
+    }
+    if (wc_tui_cell_at(t, knob.x, knob.y, &kx, &ky)) {
+      wc_tui_fill(t, wc_rect(kx, ky, 1, 1), 0x0A0C10u, 200);
+      wc_tui_put(t, kx, ky, 'O', stick ? WC_C_TEXT : 0xB4B8C0u);
     }
   }
+  i32 right = (i32)t->cols - 2, bottom = (i32)t->rows - 2;
+  wc_touch_button(t, wc_tui_id("TouchJump", 0), right, bottom, "JUMP", tc->jump_held);
+  b32 flying = g->player.flying;
+  wc_touch_button(t, wc_tui_id("TouchSneak", 0), right, bottom - 3, flying ? "DOWN" : "SNEAK",
+                  flying ? tc->sneak_held : tc->sneak_on);
+  i32 my = wc_badge_rows(t);
+  WcRect menu = wc_rect(right - 8, my, 8, 1);
+  wc_tui_area(t, wc_tui_id("TouchPause", 0), menu);
+  wc_tui_fill(t, menu, 0x0A0C10u, WC_A_HUD);
+  wc_tui_cstr(t, menu.x, menu.y, "[ Menu ]", WC_C_TEXT);
+}
+
+// slots share their borders: .---.---. over |icon|icon| rows
+hz_internal void wc_hotbar(WcGame *g) {
+  WcTui *t = &g->tui;
+  u32 slots = WC_HOTBAR_SLOTS + (g->touch_mode ? 1 : 0);
+  i32 sw = WC_ICON_W + 1, w = (i32)slots * sw + 1, h = WC_ICON_H + 2;
+  i32 x0 = ((i32)t->cols - w) / 2, y0 = (i32)t->rows - h;
+  wc_tui_fill(t, wc_rect(x0, y0, w, h), 0x0A0C10u, WC_A_HUD);
+  for (u32 i = 0; i < slots; i++) {
+    i32 x = x0 + (i32)i * sw;
+    WcRect slot = wc_rect(x, y0, sw + 1, h);
+    b32 inv = i == WC_HOTBAR_SLOTS;
+    wc_tui_area(t, inv ? wc_tui_id("TouchInventory", 0) : wc_tui_id("HotbarSlot", i), slot);
+    if (inv) {
+      wc_tui_box(t, slot, WC_C_DIM);
+      wc_tui_cstr(t, x + 1, y0 + 1, "...", WC_C_TEXT);
+      continue;
+    }
+    wc_icon(t, &g->icons[g->hotbar[i]], x + 1, y0 + 1);
+  }
+  // the selected slot's frame last, so it wins the shared borders
+  for (u32 i = 0; i < slots; i++)
+    if (i != g->selected) wc_tui_box(t, wc_rect(x0 + (i32)i * sw, y0, sw + 1, h), WC_C_DIM);
+  wc_tui_box(t, wc_rect(x0 + (i32)g->selected * sw, y0, sw + 1, h), 0xFFFFFFu);
 }
 
 hz_internal void wc_hud(WcGame *g) {
-  // hotbar
-  ui_element({.id = ui_id("Hotbar"),
-              .floating = {.attach_to = UI_ATTACH_TO_ROOT,
-                           .attach_points = {.element = UI_ATTACH_POINT_CENTER_BOTTOM,
-                                             .parent = UI_ATTACH_POINT_CENTER_BOTTOM},
-                           .offset = {0, -14},
-                           .z_index = 5,
-                           .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
-              .layout = {.child_gap = 4, .padding = ui_padding_all(5)},
-              .background_color = {10, 12, 16, 140},
-              .corner_radius = ui_corner_radius(10),
-              .border = {.color = {255, 255, 255, 26}, .width = ui_border_outside(1)}}) {
-    for (u32 i = 0; i < WC_HOTBAR_SLOTS; i++) {
-      b32 sel = i == g->selected;
-      ui_element({.id = ui_idi("HotbarSlot", i),
-                  .layout = {.sizing = {.width = ui_sizing_fixed(50), .height = ui_sizing_fixed(50)},
-                             .layout_direction = UI_STACK,
-                             .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
-                  .background_color = sel ? (HzUIColor){255, 255, 255, 41} : (HzUIColor){255, 255, 255, 15},
-                  .corner_radius = ui_corner_radius(7),
-                  .border = {.color = sel ? (HzUIColor){255, 255, 255, 255} : (HzUIColor){255, 255, 255, 20},
-                             .width = ui_border_outside(2)},
-                  .shadow = sel ? (HzUIShadow){.color = {255, 255, 255, 64}, .blur = 12} : (HzUIShadow){0}}) {
-        ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(40), .height = ui_sizing_fixed(40)}},
-                    .image = {.texture = g->icons[g->hotbar[i]]},
-                    .aspect_ratio = {1.0f}}) {}
-        ui_element({.floating = {.attach_to = UI_ATTACH_TO_PARENT, .offset = {4, 1}}}) {
-          Allocator fa = wc_frame_alloc();
-          ui_text(wc_uistr(str_format(&fa, "%", fmt_u32(i + 1))),
-                  ui_text_config({.fontSize = 10, .textColor = {255, 255, 255, 140}}));
-        }
-      }
-    }
-    // minecraft's "..." slot: the inventory, which a keyboard reaches with E
-    if (g->touch_mode) {
-      ui_element({.id = ui_id("TouchInventory"),
-                  .layout = {.sizing = {.width = ui_sizing_fixed(50), .height = ui_sizing_fixed(50)},
-                             .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
-                  .background_color = {255, 255, 255, 15},
-                  .corner_radius = ui_corner_radius(7),
-                  .border = {.color = {255, 255, 255, 20}, .width = ui_border_outside(2)}}) {
-        ui_text(ui_string("\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2"),
-                ui_text_config({.fontSize = 18, .weight = UI_FONT_BOLD, .textColor = WC_C_TEXT}));
-      }
-    }
-  }
+  WcTui *t = &g->tui;
+  wc_hotbar(g);
   // toast above the hotbar
-  b32 visible = g->toast[0] != 0 && g->toast_t < 1.6f;
-  f32 t = ui_spring(g->ui, ui_id("ToastT"), visible ? 1.0f : 0.0f);
-  if (t > 0.01f && g->toast[0]) {
-    ui_element({.id = ui_id("Toast"),
-                .floating = {.attach_to = UI_ATTACH_TO_ROOT,
-                             .attach_points = {.element = UI_ATTACH_POINT_CENTER_BOTTOM,
-                                               .parent = UI_ATTACH_POINT_CENTER_BOTTOM},
-                             .offset = {0, -84},
-                             .z_index = 6,
-                             .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
-                .opacity = opt_some(f32, t)}) {
-      ui_text(wc_uis(g->toast), ui_text_config({.fontSize = 15, .weight = UI_FONT_SEMIBOLD, .textColor = WC_C_TEXT,
-                                                 .outlineColor = {0, 0, 0, 170}, .outlineWidth = 1}));
-    }
+  if (g->toast[0] && g->toast_t < 1.6f) {
+    String s = cstr_to_str(g->toast);
+    i32 y = (i32)t->rows - (WC_ICON_H + 2) - 2;
+    i32 x = ((i32)t->cols - (i32)s.len) / 2;
+    wc_tui_fill(t, wc_rect(x - 1, y, (i32)s.len + 2, 1), 0x0A0C10u, WC_A_HUD);
+    wc_tui_text(t, x, y, s, WC_C_TEXT);
   }
-  // debug overlay
   if (g->show_debug && g->debug_text) {
-    ui_element({.id = ui_id("Debug"),
-                .floating = {.attach_to = UI_ATTACH_TO_ROOT, .offset = {10, 10}, .z_index = 6,
-                             .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
-                .layout = {.padding = {.left = 10, .right = 10, .top = 8, .bottom = 8}},
-                .background_color = {0, 0, 0, 115},
-                .corner_radius = ui_corner_radius(6)}) {
-      ui_text(wc_uis(g->debug_text), ui_text_config({.fontSize = 12, .lineHeight = 17, .textColor = {232, 232, 232, 255},
-                                                      .wrapMode = UI_TEXT_WRAP_NEWLINES}));
-    }
+    String s = cstr_to_str(g->debug_text);
+    i32 w = MIN(64, (i32)t->cols - 2);
+    i32 rows = wc_tui_wrap_rows(s, w);
+    wc_tui_fill(t, wc_rect(0, 0, w + 2, rows + 2), 0, WC_A_HUD);
+    wc_tui_wrap(t, wc_rect(1, 1, w, rows), s, 0xE8E8E8u);
   }
   // the stick and buttons only mean something in play
   if (g->touch_mode) {
     if (g->mode == WC_MODE_PLAYING) wc_touch_hud(g);
     return;
   }
-  // key hint
-  ui_element({.id = ui_id("Hint"),
-              .floating = {.attach_to = UI_ATTACH_TO_ROOT,
-                           .attach_points = {.element = UI_ATTACH_POINT_RIGHT_TOP, .parent = UI_ATTACH_POINT_RIGHT_TOP},
-                           .offset = {-12, WC_BADGE_CLEAR},
-                           .z_index = 6,
-                           .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH}}) {
-    ui_text(ui_string("F3 debug \xc2\xb7 E inventory \xc2\xb7 Esc menu"),
-            ui_text_config({.fontSize = 12, .textColor = {255, 255, 255, 178}, .outlineColor = {0, 0, 0, 200},
-                            .outlineWidth = 1}));
-  }
+  const char *hint = "F3 debug - E inventory - Esc menu";
+  wc_tui_cstr(t, (i32)t->cols - 1 - (i32)cstr_len(hint), wc_badge_rows(t), hint, 0xB4B4B4u);
 }
 
-// big readable frame stats for recordings; F3 swaps it for the debug text
-hz_internal void wc_stats_row(const char *label, String value) {
-  ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0)}, .child_gap = 18}}) {
-    ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(56)}}}) {
-      ui_text(wc_uis(label), ui_text_config({.fontSize = 15, .textColor = {255, 255, 255, 150}}));
-    }
-    ui_text(wc_uistr(value), ui_text_config({.fontSize = 15, .weight = UI_FONT_SEMIBOLD, .textColor = {255, 255, 255, 240}}));
-  }
-}
-
+// frame stats for recordings, top left; F3 swaps it for the debug text
 hz_internal void wc_stats_panel(WcGame *g) {
-  Allocator ta = tctx_temp_allocator(NULL);
+  WcTui *t = &g->tui;
+  Allocator fa = wc_frame_alloc();
   f32 fps = g->fps;
   f32 frame_ms = fps > 0 ? 1000.0f / fps : 0;
   u64 tris = (u64)g->renderer.stats.quads * 2;
-  String tri_s = tris >= 1000000 ? str_format(&ta, "%M", fmt_f32_p((f32)tris / 1e6f, 1))
-                                 : str_format(&ta, "%K", fmt_u32((u32)(tris / 1000)));
+  String tri_s = tris >= 1000000 ? str_format(&fa, "%M", fmt_f32_p((f32)tris / 1e6f, 1))
+                                 : str_format(&fa, "%K", fmt_u32((u32)(tris / 1000)));
 #ifdef WASM
   const char *backend = "WebGPU";
 #else
   const char *backend = "Direct3D 12";
 #endif
-  ui_element({.id = ui_id("Stats"),
-              .floating = {.attach_to = UI_ATTACH_TO_ROOT, .offset = {12, 12}, .z_index = 6,
-                           .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
-              .layout = {.layout_direction = UI_TOP_TO_BOTTOM,
-                         .padding = {.left = 16, .right = 16, .top = 12, .bottom = 12},
-                         .child_gap = 3},
-              .background_color = {0, 0, 0, 140},
-              .corner_radius = ui_corner_radius(8)}) {
-    ui_element({.layout = {.child_gap = 8, .child_alignment = {.y = UI_ALIGN_Y_BOTTOM}}}) {
-      ui_text(wc_uistr(str_format(&ta, "%", fmt_u32((u32)(fps + 0.5f)))),
-              ui_text_config({.fontSize = 38, .weight = UI_FONT_BOLD, .textColor = {120, 235, 140, 255}}));
-      ui_element({.layout = {.padding = {.bottom = 6}}}) {
-        ui_text(ui_string("FPS"), ui_text_config({.fontSize = 16, .weight = UI_FONT_SEMIBOLD,
-                                                   .textColor = {120, 235, 140, 220}}));
-      }
-    }
-    wc_stats_row("frame", str_format(&ta, "% ms", fmt_f32_p(frame_ms, 2)));
-    if (g->gpu_ms > 0) wc_stats_row("GPU", str_format(&ta, "% ms", fmt_f32_p(g->gpu_ms, 2)));
-    wc_stats_row("CPU", str_format(&ta, "% ms", fmt_f32_p(g->main_ms, 2)));
-    ui_element({.layout = {.sizing = {.width = ui_sizing_grow(0), .height = ui_sizing_fixed(1)},
-                           .padding = {.top = 4}},
-                .background_color = {255, 255, 255, 50}}) {}
-    ui_element({.layout = {.padding = {.top = 4}}}) {
-      ui_text(wc_uistr(str_format(&ta, "% triangles \xc2\xb7 % draw calls", fmt_str(tri_s),
-                                  fmt_u32(g->renderer.stats.draw_calls + g->renderer.stats.shadow_draw_calls))),
-              ui_text_config({.fontSize = 13, .textColor = {255, 255, 255, 200}}));
-    }
-    ui_text(wc_uistr(str_format(&ta, "% \xc2\xb7 % threads", fmt_cstr(backend), fmt_u32(g->world.lane_count))),
-            ui_text_config({.fontSize = 13, .textColor = {255, 255, 255, 200}}));
-  }
+  String lines[6];
+  u32 n = 0;
+  lines[n++] = str_format(&fa, "frame % ms", fmt_f32_p(frame_ms, 2));
+  if (g->gpu_ms > 0) lines[n++] = str_format(&fa, "GPU   % ms", fmt_f32_p(g->gpu_ms, 2));
+  lines[n++] = str_format(&fa, "CPU   % ms", fmt_f32_p(g->main_ms, 2));
+  lines[n++] = str_format(&fa, "% triangles - % draw calls", fmt_str(tri_s),
+                          fmt_u32(g->renderer.stats.draw_calls + g->renderer.stats.shadow_draw_calls));
+  lines[n++] = str_format(&fa, "% - % threads", fmt_cstr(backend), fmt_u32(g->world.lane_count));
+  i32 w = 0;
+  for (u32 i = 0; i < n; i++) w = MAX(w, (i32)lines[i].len);
+  wc_tui_fill(t, wc_rect(0, 0, w + 4, (i32)n + 4), 0, WC_A_HUD);
+  String f = str_format(&fa, "% FPS", fmt_u32((u32)(fps + 0.5f)));
+  wc_tui_text(t, 2, 1, f, 0x78EB8Cu);
+  for (u32 i = 0; i < n; i++) wc_tui_text(t, 2, 3 + (i32)i, lines[i], i < 3 ? WC_C_TEXT : 0xC8C8C8u);
 }
 
-void wc_ui_frame(WcGame *g, f32 dt) {
-  UNUSED(dt);
+void wc_ui_frame(WcGame *g) {
   g->cursor = OS_CURSOR_ARROW;
-  // clay lays out in logical px, which is what the ui canvas size is
-  f32 view_h = (f32)g->ui->canvas_height;
-  ui_element({.id = ui_id("WcRoot"),
-              .layout = {.sizing = {.width = ui_sizing_grow(0), .height = ui_sizing_grow(0)}},
-              .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH}) {
-    // the settings panel is most of the screen tall, and on a short screen every panel is: the hotbar would draw over it
-    b32 compact = view_h < WC_COMPACT_H;
-    if (g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR && g->mode != WC_MODE_SETTINGS && !g->hide_hud &&
-        g->started && (!compact || g->mode == WC_MODE_PLAYING))
-      wc_hud(g);
-    if (g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR && g->started && !g->show_debug) wc_stats_panel(g);
-    if (wc_touch_portrait(g) && g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR) wc_rotate_prompt(g);
-    else switch (g->mode) {
-    case WC_MODE_LOADING: wc_loading_screen(g); break;
-    case WC_MODE_MENU:
-    case WC_MODE_PAUSED: wc_menu_screen(g); break;
-    case WC_MODE_SETTINGS: wc_settings_screen(g, view_h); break;
-    case WC_MODE_INVENTORY: wc_inventory_screen(g); break;
-    case WC_MODE_ERROR: wc_error_screen(g); break;
-    case WC_MODE_PLAYING: break;
-    }
+  b32 compact = g->tui.rows < 30;
+  // a short grid gives every screen the whole height: the hotbar would draw over it
+  if (g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR && g->mode != WC_MODE_SETTINGS && !g->hide_hud &&
+      g->started && (!compact || g->mode == WC_MODE_PLAYING))
+    wc_hud(g);
+  if (g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR && g->started && !g->show_debug && !g->hide_hud)
+    wc_stats_panel(g);
+  if (wc_touch_portrait(g) && g->mode != WC_MODE_LOADING && g->mode != WC_MODE_ERROR) {
+    wc_rotate_prompt(g);
+    return;
+  }
+  switch (g->mode) {
+  case WC_MODE_LOADING: wc_loading_screen(g); break;
+  case WC_MODE_MENU:
+  case WC_MODE_PAUSED: wc_menu_screen(g); break;
+  case WC_MODE_SETTINGS: wc_settings_screen(g); break;
+  case WC_MODE_INVENTORY: wc_inventory_screen(g); break;
+  case WC_MODE_ERROR: wc_error_screen(g); break;
+  case WC_MODE_PLAYING: break;
   }
 }
 
-#undef wc_setting_row
+// ---- scripted runs ----
+
+// wc_ui_move_to:<name>[#<index>]: the pointer onto a widget, then touch_start/touch_end or key_down:Mouse Left click it
+hz_internal void wc_cmd_ui_move_to(const HzCommandCtx *ctx, void *user) {
+  WcGame *g = user;
+  String a = cstr_to_str(ctx->args);
+  u32 index = 0, name_len = a.len;
+  for (u32 i = 0; i < a.len; i++) {
+    if (a.value[i] != '#') continue;
+    name_len = i;
+    f64 v = 0;
+    if (cstr_to_f64(a.value + i + 1, &v)) index = (u32)v;
+    break;
+  }
+  Allocator fa = wc_frame_alloc();
+  String head = {.value = a.value, .len = name_len};
+  String name = str_format(&fa, "%", fmt_str(head));
+  WcRect r;
+  if (!wc_tui_find(&g->tui, wc_tui_id(name.value, index), &r)) {
+    log_error("wc_ui_move_to: no widget '%'", fmt_cstr(ctx->args));
+    return;
+  }
+  v2 c = wc_tui_rect_center(&g->tui, r);
+  AppInputEvents *ev = ctx->events;
+  ev->mouse_dx += c.x - ev->mouse_x;
+  ev->mouse_dy += c.y - ev->mouse_y;
+  ev->mouse_x = c.x;
+  ev->mouse_y = c.y;
+  // a touch event would switch the game to touch mode, so it moves the finger only when already there
+  if (!g->touch_mode || ev->len >= GAME_INPUT_EVENTS_MAX_COUNT) return;
+  AppInputEvent *e = &ev->events[ev->len++];
+  e->type = INPUT_EVENT_TOUCH_MOVE;
+  e->touch.id = 1;
+  e->touch.x = c.x;
+  e->touch.y = c.y;
+}
+
+void wc_ui_register_commands(WcGame *g) { hz_command_register("wc_ui_move_to", wc_cmd_ui_move_to, g); }
