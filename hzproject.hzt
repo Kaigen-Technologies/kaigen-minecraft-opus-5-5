@@ -11,3 +11,5 @@ ios_bundle_name WebCraft
 ios_bundle_id com.kaigen.webcraft
 publish
   product_name "WebCraft"
+wasm_optimize size
+type_registry off
