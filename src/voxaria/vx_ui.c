@@ -1576,7 +1576,7 @@ void vx_ui_frame(VxGame *g, f32 dt) {
     if (g->mode != VX_MODE_LOADING && g->mode != VX_MODE_ERROR && g->mode != VX_MODE_SETTINGS && !g->hide_hud &&
         g->started && !title && (!compact || g->mode == VX_MODE_PLAYING))
       vx_hud(g);
-    if (g->mode != VX_MODE_LOADING && g->mode != VX_MODE_ERROR && g->started && !g->show_debug && !title) vx_stats_panel(g);
+    if (g->mode != VX_MODE_LOADING && g->mode != VX_MODE_ERROR && g->started && !g->show_debug && !g->hide_hud && !title) vx_stats_panel(g);
     if (vx_touch_portrait(g) && g->mode != VX_MODE_LOADING && g->mode != VX_MODE_ERROR) vx_rotate_prompt(g);
     else switch (g->mode) {
     case VX_MODE_LOADING: vx_loading_screen(g); break;

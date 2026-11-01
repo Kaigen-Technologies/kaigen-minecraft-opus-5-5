@@ -199,6 +199,12 @@ force_inline b32 vx_pressed(const VxGame *g, App_InputButtonType k) { return g->
 hz_internal void vx_handle_input(VxGame *g, f32 dt) {
   g->touch_mode = g->input.last_category == INPUT_CATEGORY_TOUCH;
   if (g->mode != VX_MODE_PLAYING || vx_touch_portrait(g)) vx_touch_reset(&g->touch);
+  // reference scenes: stepping on while a scene's world still loads is allowed
+  if (g->mode == VX_MODE_PLAYING || (g->mode == VX_MODE_LOADING && g->scene_resume)) {
+    if (vx_pressed(g, KEY_PAGE_DOWN)) vx_scene_start(g, g->scene % VX_SCENES + 1);
+    if (vx_pressed(g, KEY_PAGE_UP)) vx_scene_start(g, g->scene > 1 ? g->scene - 1 : VX_SCENES);
+    if (vx_pressed(g, KEY_HOME) && g->scene) vx_scene_start(g, g->scene);
+  }
   // modal keys outside play
   if (g->mode == VX_MODE_INVENTORY) {
     if (vx_pressed(g, KEY_E)) vx_game_lock(g);
@@ -485,7 +491,9 @@ hz_internal void vx_game_update(VxGame *g, AppMemory *memory) {
       p->pos.y = y + 0.001;
       p->fall_peak = p->pos.y;
       g->spawn_pos = p->pos;
-      if (g->mode == VX_MODE_LOADING) vx_game_set_mode(g, g->test_play ? VX_MODE_PLAYING : VX_MODE_MENU);
+      if (g->mode == VX_MODE_LOADING && g->scene_resume) vx_game_lock(g);
+      else if (g->mode == VX_MODE_LOADING) vx_game_set_mode(g, g->test_play ? VX_MODE_PLAYING : VX_MODE_MENU);
+      g->scene_resume = false;
     }
   }
   if (g->has_pending_above && vx_world_is_ready(&g->world, p->pos.x, p->pos.z)) {
@@ -554,6 +562,7 @@ hz_internal void vx_game_update(VxGame *g, AppMemory *memory) {
     g->pending_stage = 0;
   }
 
+  vx_scene_update(g, dt);
   vx_handle_input(g, dt);
   if (g->mode == VX_MODE_PLAYING || g->mode == VX_MODE_MENU) vx_auto_tune(g, dt);
   // a hit-stop holds bodies, swings and particles; the clock, weather and interface run on

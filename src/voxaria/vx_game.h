@@ -109,6 +109,7 @@ void vx_map_update(VxMap *m, const VxWorld *w, VxV3d around);
 
 // ---- event log ----
 
+#define VX_SCENES 20 // the reference video's scenes, Page Down / Page Up in play
 #define VX_EVENTS 8
 #define VX_EVENT_LEN 96
 #define VX_EVENT_LIFE 10.0f
@@ -1082,6 +1083,10 @@ typedef struct {
   b32 scripted;  // scripted runs keep the quality they were given
   b32 has_forced_seed;
   u32 forced_seed;
+  u32 scene; // 1-based reference scene being set up, 0 none
+  u32 scene_pos; // offset of the scene script's next step
+  f32 scene_t;
+  b32 scene_resume; // the scene's world load ends in play, not the menu
 } VxGame;
 
 void vx_cut_init(VxCut *c, Allocator *alloc);
@@ -1106,6 +1111,9 @@ force_inline b32 vx_title_active(const VxGame *g) { return g->started && !g->pla
 
 
 void vx_game_toast(VxGame *g, const char *text);
+// reference scenes S1-S20 set up inside a running game, input stays live
+void vx_scene_start(VxGame *g, u32 n);
+void vx_scene_update(VxGame *g, f32 dt);
 void vx_game_apply_settings(VxGame *g);
 void vx_game_new_world(VxGame *g);
 void vx_break_block(VxGame *g, VxRayHit h);
