@@ -48,8 +48,58 @@ void vx_scene_start(VxGame *g, u32 n) {
   g->scene_pos = 0;
   g->scene_t = 0;
   g->scene_resume = true;
+  // the previous scene's granted abilities go with its gear
+  g->forced_wings = 0;
+  g->forced_double = false;
+  g->forced_hook = false;
   log_info("scene: %", fmt_cstr(vx_scenes[n - 1].name));
   vx_game_toast(g, vx_scenes[n - 1].name);
+}
+
+void vx_wardrobe_clear(VxGame *g) {
+  for (u32 i = 0; i < VX_ARMOR_SLOTS; i++) g->inv.armor[i] = (VxStack){0};
+  for (u32 i = 0; i < VX_ACCESSORY_SLOTS; i++) g->inv.accessory[i] = (VxStack){0};
+  g->forced_wings = 0;
+  g->forced_double = false;
+  g->forced_hook = false;
+}
+
+void vx_wardrobe_pick(VxGame *g, VxItemId item) {
+  VxInventory *inv = &g->inv;
+  u8 kind = vx_item(item)->kind;
+  if (kind >= VX_IK_HEAD && kind <= VX_IK_LEGS) {
+    VxStack *s = &inv->armor[kind - VX_IK_HEAD];
+    *s = s->item == item ? (VxStack){0} : (VxStack){item, 1};
+    return;
+  }
+  if (kind == VX_IK_ACCESSORY) {
+    for (u32 i = 0; i < VX_ACCESSORY_SLOTS; i++)
+      if (inv->accessory[i].item == item) {
+        inv->accessory[i] = (VxStack){0};
+        // wings a scene granted come off with the wings item
+        if (item == I_ANGEL_WINGS) g->forced_wings = 0;
+        if (item == I_CLOUD_BOTTLE) g->forced_double = false;
+        if (item == I_GRAPPLING_HOOK) g->forced_hook = false;
+        return;
+      }
+    u32 to = VX_ACCESSORY_SLOTS - 1;
+    for (u32 i = 0; i < VX_ACCESSORY_SLOTS; i++)
+      if (!inv->accessory[i].item) {
+        to = i;
+        break;
+      }
+    inv->accessory[to] = (VxStack){item, 1};
+    return;
+  }
+  // a weapon or tool goes in the held slot; a bow brings a full quiver
+  for (u32 i = 0; i < VX_INV_SLOTS; i++)
+    if (inv->slot[i].item == item && i != inv->selected) inv->slot[i] = (VxStack){0};
+  inv->slot[inv->selected] = (VxStack){item, 1};
+  if (kind == VX_IK_BOW) {
+    u32 have = vx_inventory_count(inv, I_WOODEN_ARROW);
+    if (have < 999) vx_inventory_add(inv, I_WOODEN_ARROW, 999 - have);
+  }
+  vx_game_select(g, inv->selected);
 }
 
 // fires the scene's steps that are due; each runs through the same handler its --commands step would

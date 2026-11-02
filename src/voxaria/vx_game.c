@@ -211,6 +211,10 @@ hz_internal void vx_handle_input(VxGame *g, f32 dt) {
     else if (vx_pressed(g, KEY_ESCAPE)) vx_game_set_mode(g, VX_MODE_PAUSED);
     return;
   }
+  if (g->mode == VX_MODE_WARDROBE) {
+    if (vx_pressed(g, KEY_B) || vx_pressed(g, KEY_E) || vx_pressed(g, KEY_ESCAPE)) vx_game_lock(g);
+    return;
+  }
   if (g->mode == VX_MODE_SETTINGS) {
     if (vx_pressed(g, KEY_ESCAPE)) {
       vx_game_apply_settings(g);
@@ -246,6 +250,10 @@ hz_internal void vx_handle_input(VxGame *g, f32 dt) {
   if (vx_pressed(g, KEY_H)) vx_quick_heal(g);
   if (vx_pressed(g, KEY_E)) {
     vx_game_set_mode(g, VX_MODE_INVENTORY);
+    return;
+  }
+  if (vx_pressed(g, KEY_B)) {
+    vx_game_set_mode(g, VX_MODE_WARDROBE);
     return;
   }
   g->time_scale = 1;
@@ -1463,6 +1471,8 @@ hz_internal void vx_cmd_point(const HzCommandCtx *ctx, void *user) {
   else if (vx_arg_f32(ctx->args, "armor", &i)) eid = ui_idi("ArmorSlot", (u32)i);
   else if (vx_arg_f32(ctx->args, "acc", &i)) eid = ui_idi("AccSlot", (u32)i);
   else if (vx_arg_f32(ctx->args, "trash", &i)) eid = ui_id("TrashSlot");
+  else if (vx_arg_f32(ctx->args, "ward", &i)) eid = ui_idi("WardrobeItem", (u32)i);
+  else if (vx_arg_f32(ctx->args, "wardhot", &i)) eid = ui_idi("WardrobeHotbar", (u32)i);
   else if (vx_arg_f32(ctx->args, "chest", &i)) eid = ui_idi("ChestSlot", (u32)i);
   else if (vx_arg_word(ctx->args, "recipe", &name)) {
     // the first recipe making the named item

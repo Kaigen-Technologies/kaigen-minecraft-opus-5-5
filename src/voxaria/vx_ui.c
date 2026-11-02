@@ -32,6 +32,8 @@ typedef enum {
   VX_BTN_INVENTORY_DONE,
   VX_BTN_LOOT_ALL,
   VX_BTN_DEPOSIT_ALL,
+  VX_BTN_WARDROBE_CLEAR,
+  VX_BTN_WARDROBE_DONE,
   VX_BTN_COUNT,
 } VxButtonSlot;
 static_assert(VX_BTN_COUNT <= VX_UI_BUTTONS, "every button needs an animation slot");
@@ -913,6 +915,189 @@ hz_internal void vx_inventory_screen(VxGame *g) {
   }
 }
 
+// ---- wardrobe ----
+
+hz_internal const VxItemId vx_wardrobe_weapons[] = {I_COPPER_SHORTSWORD, I_COPPER_BROADSWORD, I_IRON_BROADSWORD,
+                                                    I_SILVER_BROADSWORD, I_GOLD_BROADSWORD,   I_ICE_BLADE,
+                                                    I_ENCHANTED_SWORD,   I_NIGHTS_EDGE,       I_WOODEN_BOW,
+                                                    I_WAND_OF_SPARKING};
+hz_internal const VxItemId vx_wardrobe_head[] = {I_MINING_HELMET, I_IRON_HELMET, I_GOLD_HELMET};
+hz_internal const VxItemId vx_wardrobe_body[] = {I_IRON_CHAINMAIL, I_GOLD_CHAINMAIL};
+hz_internal const VxItemId vx_wardrobe_legs[] = {I_IRON_GREAVES, I_GOLD_GREAVES};
+hz_internal const VxItemId vx_wardrobe_acc[] = {I_ANGEL_WINGS, I_HERMES_BOOTS, I_CLOUD_BOTTLE, I_GRAPPLING_HOOK};
+
+hz_internal b32 vx_wardrobe_worn(const VxGame *g, VxItemId item) {
+  for (u32 i = 0; i < VX_ARMOR_SLOTS; i++)
+    if (g->inv.armor[i].item == item) return true;
+  for (u32 i = 0; i < VX_ACCESSORY_SLOTS; i++)
+    if (g->inv.accessory[i].item == item) return true;
+  return g->inv.slot[g->inv.selected].item == item;
+}
+
+// a Terraria slot that acts on a click instead of picking the stack up; returns the click
+hz_internal b32 vx_wardrobe_slot(VxGame *g, HzUIElementId id, VxStack s, VxSlotKind kind, f32 cell, b32 lit,
+                                 const char *hint) {
+  b32 clicked = false;
+  ui_element({.id = id, .layout = {.layout_direction = UI_STACK}}) {
+    UIInteract a = ui_interact(&g->input);
+    if (a.hovered) {
+      g->inv_hover_item = s.item;
+      g->cursor = OS_CURSOR_HAND;
+      clicked = a.clicked;
+    }
+    vx_slot_ui(g, ui_idi("WardrobeTile", id.id), &s, kind, cell, lit, false, hint);
+    if (a.hovered) {
+      ui_element({.floating = {.attach_to = UI_ATTACH_TO_PARENT, .z_index = 12,
+                               .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH},
+                  .layout = {.sizing = {.width = ui_sizing_fixed(cell), .height = ui_sizing_fixed(cell)}},
+                  .background_color = {255, 255, 255, 45},
+                  .corner_radius = ui_corner_radius(cell * 0.14f)}) {}
+    }
+  }
+  return clicked;
+}
+
+hz_internal void vx_wardrobe_label(const char *text, f32 size) {
+  ui_text(vx_uis(text), ui_text_config({.fontSize = (u16)size, .weight = UI_FONT_SEMIBOLD, .textColor = VX_C_TEXT,
+                                        .outlineColor = {0, 0, 0, 220}, .outlineWidth = 1}));
+}
+
+// a row of catalog items, optionally under a side label; a click wears, holds or takes off
+hz_internal void vx_wardrobe_row(VxGame *g, const char *label, const VxItemId *items, u32 n, u32 base, f32 cell,
+                                 f32 gap, f32 label_w) {
+  ui_element({.layout = {.child_gap = (u16)gap, .child_alignment = {.y = UI_ALIGN_Y_CENTER}}}) {
+    if (label_w > 0) {
+      ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(label_w)}}}) {
+        ui_text(vx_uis(label), ui_text_config({.fontSize = 13, .textColor = VX_C_MUTED}));
+      }
+    }
+    for (u32 i = 0; i < n; i++) {
+      u8 ik = vx_item(items[i])->kind;
+      VxSlotKind kind = ik == VX_IK_ACCESSORY                   ? VX_SLOT_ACCESSORY
+                        : ik >= VX_IK_HEAD && ik <= VX_IK_LEGS ? VX_SLOT_HEAD
+                                                                : VX_SLOT_INV;
+      if (vx_wardrobe_slot(g, ui_idi("WardrobeItem", base + i), (VxStack){items[i], 1}, kind, cell,
+                           vx_wardrobe_worn(g, items[i]), NULL))
+        vx_wardrobe_pick(g, items[i]);
+    }
+  }
+}
+
+// the character creator's way: arrows step through each choice
+hz_internal void vx_wardrobe_stepper(VxGame *g, u32 part, const char *label) {
+  VxSettings *s = &g->settings;
+  u32 n = vx_puppet_option_count((VxPuppetPart)part), *field = vx_pp_field(s, (VxPuppetPart)part);
+  u32 cur = *field % n;
+  ui_element({.layout = {.child_gap = 6, .child_alignment = {.y = UI_ALIGN_Y_CENTER}}}) {
+    ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(84)}}}) {
+      ui_text(vx_uis(label), ui_text_config({.fontSize = 13, .textColor = VX_C_MUTED}));
+    }
+    for (u32 side = 0; side < 2; side++) {
+      if (side == 1) {
+        ui_element({.layout = {.sizing = {.width = ui_sizing_fixed(110), .height = ui_sizing_fixed(28)},
+                               .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
+                    .background_color = {52, 70, 150, 190},
+                    .corner_radius = ui_corner_radius(5),
+                    .border = {.color = {12, 16, 40, 200}, .width = ui_border_outside(2)}}) {
+          ui_text(vx_uis(vx_puppet_option_names((VxPuppetPart)part)[cur]),
+                  ui_text_config({.fontSize = 13, .textColor = VX_C_TEXT, .outlineColor = {0, 0, 0, 200},
+                                  .outlineWidth = 1}));
+        }
+      }
+      HzUIElementId aid = ui_idi("WardrobeArrow", part * 2 + side);
+      ui_element({.id = aid,
+                  .layout = {.sizing = {.width = ui_sizing_fixed(28), .height = ui_sizing_fixed(28)},
+                             .child_alignment = {.x = UI_ALIGN_X_CENTER, .y = UI_ALIGN_Y_CENTER}},
+                  .background_color =
+                      ui_pointer_over(aid) ? (HzUIColor){90, 120, 200, 230} : (HzUIColor){70, 110, 170, 190},
+                  .corner_radius = ui_corner_radius(5),
+                  .border = {.color = {12, 16, 40, 200}, .width = ui_border_outside(2)}}) {
+        UIInteract a = ui_interact(&g->input);
+        if (a.hovered) g->cursor = OS_CURSOR_HAND;
+        if (a.clicked) *field = side ? (cur + 1) % n : (cur + n - 1) % n;
+        ui_text(vx_uis(side ? ">" : "<"), ui_text_config({.fontSize = 16, .weight = UI_FONT_BOLD, .textColor = VX_C_TEXT}));
+      }
+    }
+  }
+}
+
+hz_internal void vx_wardrobe_screen(VxGame *g) {
+  b32 compact = (f32)g->ui->canvas_height < VX_COMPACT_H;
+  f32 cell = compact ? 36.0f : 48.0f, gap = compact ? 3.0f : VX_INV_GAP, label_w = 44;
+  g->inv_hover_item = 0;
+  HzUIElementDesc sd = vx_screen_desc(g, ui_id("WardrobeScreen"));
+  ui_element_of(&sd) {
+    HzUIElementDesc pd = vx_panel_desc(ui_id("WardrobePanel"), 0);
+    pd.layout.padding = compact ? (HzUIPadding){.left = 16, .right = 16, .top = 10, .bottom = 10}
+                                : (HzUIPadding){.left = 24, .right = 24, .top = 18, .bottom = 18};
+    ui_element_of(&pd) {
+      vx_title("Wardrobe", compact ? 20 : 26);
+      ui_element({.layout = {.child_gap = (u16)(gap * 8), .padding = {.top = compact ? 4 : 10}}}) {
+        // the catalog: everything there is to wear or hold
+        ui_element({.layout = {.layout_direction = UI_TOP_TO_BOTTOM, .child_gap = (u16)gap}}) {
+          vx_wardrobe_label("Weapons", 16);
+          vx_wardrobe_row(g, "", vx_wardrobe_weapons, 5, 0, cell, gap, 0);
+          vx_wardrobe_row(g, "", vx_wardrobe_weapons + 5, 5, 5, cell, gap, 0);
+          ui_element({.layout = {.sizing = {.height = ui_sizing_fixed(gap * 2)}}}) {}
+          vx_wardrobe_label("Armor", 16);
+          vx_wardrobe_row(g, "Head", vx_wardrobe_head, ARRAY_SIZE(vx_wardrobe_head), 10, cell, gap, label_w);
+          vx_wardrobe_row(g, "Body", vx_wardrobe_body, ARRAY_SIZE(vx_wardrobe_body), 20, cell, gap, label_w);
+          vx_wardrobe_row(g, "Legs", vx_wardrobe_legs, ARRAY_SIZE(vx_wardrobe_legs), 30, cell, gap, label_w);
+          ui_element({.layout = {.sizing = {.height = ui_sizing_fixed(gap * 2)}}}) {}
+          vx_wardrobe_label("Accessories", 16);
+          vx_wardrobe_row(g, "", vx_wardrobe_acc, ARRAY_SIZE(vx_wardrobe_acc), 40, cell, gap, 0);
+        }
+        // what is on now: a click takes it off
+        ui_element({.layout = {.layout_direction = UI_TOP_TO_BOTTOM, .child_gap = (u16)gap}}) {
+          vx_wardrobe_label("Equipped", 16);
+          ui_element({.layout = {.child_gap = (u16)gap}}) {
+            ui_element({.layout = {.layout_direction = UI_TOP_TO_BOTTOM, .child_gap = (u16)gap}}) {
+              for (u32 i = 0; i < VX_ARMOR_SLOTS; i++)
+                if (vx_wardrobe_slot(g, ui_idi("WardrobeArmor", i), g->inv.armor[i], (VxSlotKind)(VX_SLOT_HEAD + i),
+                                     cell, false, i == 0 ? "Head" : i == 1 ? "Body" : "Legs"))
+                  g->inv.armor[i] = (VxStack){0};
+            }
+            ui_element({.layout = {.layout_direction = UI_TOP_TO_BOTTOM, .child_gap = (u16)gap}}) {
+              for (u32 i = 0; i < VX_ACCESSORY_SLOTS; i++)
+                if (vx_wardrobe_slot(g, ui_idi("WardrobeAcc", i), g->inv.accessory[i], VX_SLOT_ACCESSORY, cell, false,
+                                     "Acc") &&
+                    g->inv.accessory[i].item)
+                  vx_wardrobe_pick(g, g->inv.accessory[i].item);
+            }
+          }
+          Allocator fa = vx_frame_alloc();
+          ui_text(vx_uistr(str_format(&fa, "Defense %", fmt_u32(vx_inventory_defense(&g->inv)))),
+                  ui_text_config({.fontSize = 13, .weight = UI_FONT_SEMIBOLD, .textColor = VX_C_TEXT}));
+        }
+        // the body under it all
+        ui_element({.layout = {.layout_direction = UI_TOP_TO_BOTTOM, .child_gap = (u16)(gap + 2)}}) {
+          vx_wardrobe_label("Appearance", 16);
+          for (u32 i = 0; i < VX_PP_COUNT; i++) vx_wardrobe_stepper(g, i, VX_PP_LABELS[i]);
+        }
+      }
+      // the hotbar: a click picks the slot a weapon goes into
+      ui_element({.layout = {.layout_direction = UI_TOP_TO_BOTTOM, .child_gap = (u16)gap, .padding = {.top = 8}}}) {
+        vx_wardrobe_label("Hotbar", 16);
+        ui_element({.layout = {.child_gap = (u16)gap}}) {
+          for (u32 i = 0; i < VX_HOTBAR_SLOTS; i++)
+            if (vx_wardrobe_slot(g, ui_idi("WardrobeHotbar", i), g->inv.slot[i], VX_SLOT_INV, cell,
+                                 i == g->inv.selected, NULL))
+              vx_game_select(g, i);
+        }
+      }
+      ui_element({.layout = {.child_gap = 10, .padding = {.top = 8}, .child_alignment = {.y = UI_ALIGN_Y_CENTER}}}) {
+        if (vx_button(g, ui_id("WardrobeClearBtn"), "Clear outfit", VX_BTN_WARDROBE_CLEAR, false, false))
+          vx_wardrobe_clear(g);
+        if (vx_button(g, ui_id("WardrobeDoneBtn"), "Done", VX_BTN_WARDROBE_DONE, true, false)) vx_game_lock(g);
+        vx_muted("Click to wear or hold, click again to take off. Weapons go in the selected hotbar slot. B or Esc "
+                 "closes.",
+                 13);
+      }
+    }
+  }
+  if (g->inv_hover_item && !g->touch_mode) vx_item_tooltip(g, g->inv_hover_item, NULL);
+}
+
 // ---- error ----
 
 hz_internal void vx_error_screen(VxGame *g) {
@@ -1502,7 +1687,7 @@ hz_internal void vx_hud(VxGame *g) {
                            .offset = {-12, VX_BADGE_CLEAR},
                            .z_index = 6,
                            .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH}}) {
-    ui_text(ui_string("F3 debug \xc2\xb7 E inventory \xc2\xb7 Esc menu"),
+    ui_text(ui_string("F3 debug \xc2\xb7 E inventory \xc2\xb7 B wardrobe \xc2\xb7 Esc menu"),
             ui_text_config({.fontSize = 12, .textColor = {255, 255, 255, 178}, .outlineColor = {0, 0, 0, 200},
                             .outlineWidth = 1}));
   }
@@ -1587,6 +1772,7 @@ void vx_ui_frame(VxGame *g, f32 dt) {
     case VX_MODE_PAUSED: vx_menu_screen(g); break;
     case VX_MODE_SETTINGS: vx_settings_screen(g, view_h); break;
     case VX_MODE_INVENTORY: vx_inventory_screen(g); break;
+    case VX_MODE_WARDROBE: vx_wardrobe_screen(g); break;
     case VX_MODE_ERROR: vx_error_screen(g); break;
     case VX_MODE_PLAYING: break;
     }

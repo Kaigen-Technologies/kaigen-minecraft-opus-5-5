@@ -885,6 +885,7 @@ typedef enum {
   VX_MODE_INVENTORY,
   VX_MODE_SETTINGS,
   VX_MODE_ERROR,
+  VX_MODE_WARDROBE,
 } VxMode;
 
 typedef enum {
@@ -1116,6 +1117,9 @@ void vx_game_toast(VxGame *g, const char *text);
 // reference scenes S1-S20 set up inside a running game, input stays live
 void vx_scene_start(VxGame *g, u32 n);
 void vx_scene_update(VxGame *g, f32 dt);
+// the wardrobe's actions: wear or take off an armour piece or accessory, hold a weapon in the selected slot, strip to the bare character
+void vx_wardrobe_pick(VxGame *g, VxItemId item);
+void vx_wardrobe_clear(VxGame *g);
 void vx_game_apply_settings(VxGame *g);
 void vx_game_new_world(VxGame *g);
 void vx_break_block(VxGame *g, VxRayHit h);
