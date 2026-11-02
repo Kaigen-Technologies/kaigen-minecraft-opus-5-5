@@ -475,16 +475,16 @@ void vx_use_item(VxGame *g, b32 held, b32 pressed, VxRayHit h) {
     return;
   case VX_IK_PICKAXE:
   case VX_IK_AXE:
-    vx_entities_trigger_swing(&g->ents, use);
+    vx_entities_trigger_swing(&g->ents, VX_ATK_TIME);
     vx_audio_play(&g->audio, VX_SND_SWING);
     g->use_cd = use;
     if (h.hit) vx_hit_tile(g, h, it);
     return;
   case VX_IK_SWORD:
     // the whoosh comes with the strike, not the wind-up
-    vx_entities_trigger_swing(&g->ents, use);
+    vx_entities_trigger_swing(&g->ents, VX_ATK_TIME);
     g->use_cd = use;
-    vx_combat_swing(g, it, use);
+    vx_combat_swing(g, it, VX_ATK_TIME);
     // blades cut grass and flowers, as in Terraria
     if (h.hit && vx_shape[h.id] == VX_SHAPE_CROSS && vx_replaceable[h.id]) vx_break_block(g, h);
     return;
@@ -496,9 +496,9 @@ void vx_use_item(VxGame *g, b32 held, b32 pressed, VxRayHit h) {
     }
     // the bow is drawn and the wand lifted; the shot leaves at the strike
     g->use_cd = use;
-    vx_entities_trigger_swing(&g->ents, use);
-    g->ents.puppet.aim_t = use + 0.5f;
-    vx_combat_ready(g, it, use);
+    vx_entities_trigger_swing(&g->ents, VX_ATK_TIME);
+    g->ents.puppet.aim_t = VX_ATK_TIME + 0.5f;
+    vx_combat_ready(g, it, VX_ATK_TIME);
     return;
   case VX_IK_SUMMON:
     if (!pressed) return;

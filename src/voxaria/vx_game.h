@@ -366,6 +366,7 @@ typedef struct {
   f32 leg_lx, leg_lz, leg_rx, leg_rz;
   b32 hold; // the right fist raised with its item straight up, as the reference holds a sword between swings
   f32 item_up; // 1 the item stands straight up out of the fist, 0 it lies along the forearm; blended so it never flips
+  f32 item_ref; // the arm angle the upright item is set against: frozen through an attack so the item swings with the arm
 } VxPose;
 
 typedef struct {
@@ -498,10 +499,11 @@ force_inline u32 vx_hue_hex(f32 h, f32 w) {
 
 #define VX_MAX_PROJECTILES 256
 
-#define VX_ATK_WIND 0.62f   // share of an attack spent winding up
-#define VX_ATK_STRIKE 0.2f  // share spent on the strike, three times faster; the rest follows through
+#define VX_ATK_TIME 0.25f   // every attack: the arm goes up, then comes down fast
+#define VX_ATK_WIND 0.62f   // share spent going up
+#define VX_ATK_STRIKE 0.2f  // share spent coming down, three times faster; the rest is still
 
-// one curve for every attack, so the arm and the hit agree: 0..1 through the wind-up (easing out), 1..2 through the strike (accelerating), 2 after
+// one curve for every attack, so the arm and the hit agree: 0..1 going up (easing out), 1..2 coming down (accelerating), 2 after
 force_inline f32 vx_attack_phase(f32 u) {
   if (u < VX_ATK_WIND) {
     f32 s = u / VX_ATK_WIND;
@@ -514,13 +516,8 @@ force_inline f32 vx_attack_phase(f32 u) {
   return 2;
 }
 
-// the sword arm's angle from hanging (0) through forward (pi/2) to overhead (pi) at an attack phase
-#define VX_ATK_HOLD 0.52f
-#define VX_ATK_RAISED 2.75f
-#define VX_ATK_DOWN 0.1f
-force_inline f32 vx_slash_arm(f32 ph) {
-  return ph <= 1 ? VX_ATK_HOLD + (VX_ATK_RAISED - VX_ATK_HOLD) * ph : VX_ATK_RAISED + (VX_ATK_DOWN - VX_ATK_RAISED) * (ph - 1);
-}
+// how far the arm goes up from where it rests, at an attack phase
+force_inline f32 vx_attack_lift(f32 ph) { return ph <= 1 ? ph : 2 - ph; }
 
 typedef struct {
   VxV3d p;
@@ -541,7 +538,6 @@ typedef struct {
   b32 released;   // the strike has begun: hits, trail and thrown bolts
   const VxItemInfo *pending; // a shot waiting for the strike of its draw or flick
   f32 pending_t;
-  b32 stab;       // a shortsword thrusts along the view instead of swinging
   v3 tip_prev; // the blade tip last frame, relative to the chest
   b32 tip_valid;
   VxProjectile *proj; // VX_MAX_PROJECTILES

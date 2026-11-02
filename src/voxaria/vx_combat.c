@@ -52,8 +52,6 @@ void vx_combat_swing(VxGame *g, const VxItemInfo *weapon, f32 dur) {
   c->knock = broad ? 8.0f : 5.5f;
   c->trail_tint = vx_cb_trail_tint(weapon);
   c->tip_valid = false;
-  c->stab = weapon->art == VX_ART_SHORTSWORD;
-  if (c->stab) c->reach = 2.7f;
   c->glint_tint = weapon == vx_item(I_NIGHTS_EDGE)       ? vx_cb_rgba(0xC060FF, 1)
                   : weapon == vx_item(I_ENCHANTED_SWORD) ? vx_cb_rgba(0xFF9CF0, 1)
                   : weapon == vx_item(I_ICE_BLADE)       ? vx_cb_rgba(0xE0F8FF, 1)
@@ -226,22 +224,10 @@ hz_internal void vx_cb_melee(VxGame *g, f32 dt) {
   VxV3d chest = vx_cb_chest(p);
   // the blade turns about the shoulder in the plane of the aim, overhead to low in front, as the arm does
   VxV3d sh = {chest.x + r.x * 0.5 + up.x * 0.35, chest.y + up.y * 0.35, chest.z + r.z * 0.5 + up.z * 0.35};
-  f32 strike = m_minf(ph - 1, 1), rad = c->reach * 0.8f;
-  if (c->stab) {
-    // a thrust: a narrow streak out along the view, a glint at the point
-    f32 len = c->reach * strike;
-    VxV3d s0 = {sh.x + a.x * 0.6, sh.y + a.y * 0.6 - 0.15, sh.z + a.z * 0.6};
-    for (u32 s = 0; s < 6; s++) {
-      f32 f = ((f32)s + random_f32(&c->rng)) / 6.0f * len;
-      VxV3d at = {s0.x + a.x * f, s0.y + a.y * f, s0.z + a.z * f};
-      vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.05f, 1, 0.14f, 0.14f + 0.12f * f / m_maxf(len, 0.1f),
-                        c->trail_tint);
-    }
-    if (strike > 0.9f && random_f32(&c->rng) < 0.5f)
-      vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, (VxV3d){s0.x + a.x * len, s0.y + a.y * len, s0.z + a.z * len}, v3_scale(a, 1.0f),
-                        0.6f, 1, 0.25f, 0.22f, vx_cb_rgba(0xFFFFFF, 1));
-  } else {
-    f32 ang = vx_slash_arm(ph);
+  // the blade stands up out of the fist and swings with the arm: the tip goes back with the lift and comes down to upright
+  f32 rad = c->reach * 0.75f;
+  {
+    f32 ang = PI - 0.35f + vx_attack_lift(ph);
     v3 tip = v3_sub(v3_scale(a, m_sinf(ang)), v3_scale(up, m_cosf(ang)));
     if (c->tip_valid) {
       // a crescent between last frame's blade and this one's, brightest at the edge
@@ -251,12 +237,10 @@ hz_internal void vx_cb_melee(VxGame *g, f32 dt) {
         for (u32 band = 0; band < 4; band++) {
           f32 rr = rad * (1.0f - 0.1f * (f32)band);
           VxV3d at = {sh.x + t.x * rr, sh.y + t.y * rr, sh.z + t.z * rr};
-          // the leading edge burns near white, the inner bands in the blade's colour
           u32 tint = band == 0 ? (c->trail_tint & 0xFF000000u) | ((c->trail_tint & 0xFEFEFEu) >> 1) + 0x7F7F7Fu : c->trail_tint;
           vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.1f, 1, 0.24f, 0.42f - 0.07f * (f32)band, tint);
         }
       }
-      // the special blades shed dust off the tip as they cut
       if (c->glint_tint) {
         VxV3d at = {sh.x + tip.x * rad, sh.y + tip.y * rad, sh.z + tip.z * rad};
         v3 sweep = v3_scale(v3_sub(tip, c->tip_prev), 20.0f);
