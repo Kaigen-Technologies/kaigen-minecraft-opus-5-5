@@ -58,7 +58,13 @@ void vx_combat_swing(VxGame *g, const VxItemInfo *weapon, f32 dur) {
                   : weapon == vx_item(I_ENCHANTED_SWORD) ? vx_cb_rgba(0xFF9CF0, 1)
                   : weapon == vx_item(I_ICE_BLADE)       ? vx_cb_rgba(0xE0F8FF, 1)
                                                          : 0;
-  // as in Terraria, the Enchanted Sword throws a blade of light and the Ice Blade a shard with every swing
+  c->weapon_info = weapon;
+  c->released = false;
+}
+
+// as in Terraria, the Enchanted Sword throws a blade of light and the Ice Blade a shard, at the strike of every swing
+hz_internal void vx_cb_throw(VxGame *g, const VxItemInfo *weapon) {
+  VxCombat *c = &g->combat;
   if ((weapon == vx_item(I_ENCHANTED_SWORD) || weapon == vx_item(I_ICE_BLADE)) && c->proj_count < VX_MAX_PROJECTILES) {
     b32 beam = weapon == vx_item(I_ENCHANTED_SWORD);
     VxV3d o = vx_cb_chest(&g->player);
@@ -111,6 +117,16 @@ hz_internal VxV3d vx_cb_aim_point(const VxGame *g) {
     }
   }
   return (VxV3d){o.x + f.x * 64, o.y + f.y * 64, o.z + f.z * 64};
+}
+
+b32 vx_combat_can_shoot(const VxGame *g, const VxItemInfo *weapon) {
+  if (weapon->kind == VX_IK_BOW) return vx_inventory_count(&g->inv, I_WOODEN_ARROW) > 0;
+  return g->vitals.mana >= (f32)weapon->mana;
+}
+
+void vx_combat_ready(VxGame *g, const VxItemInfo *weapon, f32 dur) {
+  g->combat.pending = weapon;
+  g->combat.pending_t = dur * (VX_ATK_WIND + VX_ATK_STRIKE);
 }
 
 b32 vx_combat_shoot(VxGame *g, const VxItemInfo *weapon) {
@@ -176,6 +192,15 @@ hz_internal b32 vx_cb_hit(VxGame *g, u32 i, f32 base, v3 dir, f32 knock, const c
 
 hz_internal void vx_cb_melee(VxGame *g, f32 dt) {
   VxCombat *c = &g->combat;
+  // a drawn bow or a lifted wand lets go at the strike
+  if (c->pending) {
+    c->pending_t -= dt;
+    if (c->pending_t <= 0) {
+      const VxItemInfo *w = c->pending;
+      c->pending = NULL;
+      if (!g->vitals.dead && vx_combat_shoot(g, w)) vx_audio_play(&g->audio, w->kind == VX_IK_BOW ? VX_SND_BOW : VX_SND_SPARK);
+    }
+  }
   if (c->t <= 0) return;
   c->t -= dt;
   const VxPlayer *p = &g->player;
@@ -183,64 +208,72 @@ hz_internal void vx_cb_melee(VxGame *g, f32 dt) {
     c->t = 0;
     return;
   }
+  f32 ph = vx_attack_phase(m_saturatef(1 - c->t / c->dur));
+  // the wind-up carries no blade: nothing is hit or drawn until the strike
+  if (ph < 1) {
+    c->tip_valid = false;
+    return;
+  }
+  if (!c->released) {
+    c->released = true;
+    vx_audio_play(&g->audio, VX_SND_SWING);
+    vx_cb_throw(g, c->weapon_info);
+  }
   v3 a = vx_cb_aim_dir(g);
   v3 r = v3_cross(a, (v3){0, 1, 0});
   r = v3_length(r) < 1e-3f ? (v3){1, 0, 0} : v3_normalize(r);
   v3 up = v3_cross(r, a);
   VxV3d chest = vx_cb_chest(p);
-  // the arc faces the view, a block ahead of the chest, overhead from the weapon side to low across: Terraria's swing plane
-  VxV3d centre = {chest.x + a.x, chest.y + a.y, chest.z + a.z};
-  f32 k = m_saturatef(1 - c->t / c->dur);
-  f32 e = 1 - (1 - k) * (1 - k);
-  f32 th = m_lerpf(0.9f, 4.0f, e), rad = c->reach * 0.72f;
-  v3 tip = v3_add(v3_scale(r, m_cosf(th)), v3_scale(up, m_sinf(th)));
+  // the blade turns about the shoulder in the plane of the aim, overhead to low in front, as the arm does
+  VxV3d sh = {chest.x + r.x * 0.5 + up.x * 0.35, chest.y + up.y * 0.35, chest.z + r.z * 0.5 + up.z * 0.35};
+  f32 strike = m_minf(ph - 1, 1), rad = c->reach * 0.8f;
   if (c->stab) {
-    // a thrust: a narrow streak out along the view and back, a glint at the point
-    f32 o = m_sinf(k * PI);
-    VxV3d s0 = {chest.x + r.x * 0.3 + a.x * 0.5, chest.y + a.y * 0.5 - 0.1, chest.z + r.z * 0.3 + a.z * 0.5};
-    f32 len = c->reach * o;
+    // a thrust: a narrow streak out along the view, a glint at the point
+    f32 len = c->reach * strike;
+    VxV3d s0 = {sh.x + a.x * 0.6, sh.y + a.y * 0.6 - 0.15, sh.z + a.z * 0.6};
     for (u32 s = 0; s < 6; s++) {
       f32 f = ((f32)s + random_f32(&c->rng)) / 6.0f * len;
       VxV3d at = {s0.x + a.x * f, s0.y + a.y * f, s0.z + a.z * f};
-      vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.05f, 1, 0.12f, 0.14f + 0.1f * f / m_maxf(len, 0.1f),
+      vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.05f, 1, 0.14f, 0.14f + 0.12f * f / m_maxf(len, 0.1f),
                         c->trail_tint);
     }
-    if (o > 0.9f && random_f32(&c->rng) < 0.5f)
+    if (strike > 0.9f && random_f32(&c->rng) < 0.5f)
       vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, (VxV3d){s0.x + a.x * len, s0.y + a.y * len, s0.z + a.z * len}, v3_scale(a, 1.0f),
                         0.6f, 1, 0.25f, 0.22f, vx_cb_rgba(0xFFFFFF, 1));
-    c->tip_valid = false;
-  } else if (c->tip_valid) {
-    // a crescent between last frame's blade and this one's, brightest at the edge
-    for (u32 s = 0; s < 8; s++) {
-      f32 f = ((f32)s + random_f32(&c->rng)) / 8.0f;
-      v3 t = v3_normalize(v3_lerp(c->tip_prev, tip, f));
-      for (u32 band = 0; band < 4; band++) {
-        f32 rr = rad * (1.0f - 0.1f * (f32)band);
-        VxV3d at = {centre.x + t.x * rr, centre.y + t.y * rr, centre.z + t.z * rr};
-        // the leading edge burns near white, the inner bands in the blade's colour
-        u32 tint = band == 0 ? (c->trail_tint & 0xFF000000u) | ((c->trail_tint & 0xFEFEFEu) >> 1) + 0x7F7F7Fu : c->trail_tint;
-        vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.1f, 1, 0.22f, 0.4f - 0.07f * (f32)band, tint);
+  } else {
+    f32 ang = vx_slash_arm(ph);
+    v3 tip = v3_sub(v3_scale(a, m_sinf(ang)), v3_scale(up, m_cosf(ang)));
+    if (c->tip_valid) {
+      // a crescent between last frame's blade and this one's, brightest at the edge
+      for (u32 s = 0; s < 10; s++) {
+        f32 f = ((f32)s + random_f32(&c->rng)) / 10.0f;
+        v3 t = v3_normalize(v3_lerp(c->tip_prev, tip, f));
+        for (u32 band = 0; band < 4; band++) {
+          f32 rr = rad * (1.0f - 0.1f * (f32)band);
+          VxV3d at = {sh.x + t.x * rr, sh.y + t.y * rr, sh.z + t.z * rr};
+          // the leading edge burns near white, the inner bands in the blade's colour
+          u32 tint = band == 0 ? (c->trail_tint & 0xFF000000u) | ((c->trail_tint & 0xFEFEFEu) >> 1) + 0x7F7F7Fu : c->trail_tint;
+          vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.1f, 1, 0.24f, 0.42f - 0.07f * (f32)band, tint);
+        }
+      }
+      // the special blades shed dust off the tip as they cut
+      if (c->glint_tint) {
+        VxV3d at = {sh.x + tip.x * rad, sh.y + tip.y * rad, sh.z + tip.z * rad};
+        v3 sweep = v3_scale(v3_sub(tip, c->tip_prev), 20.0f);
+        vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, at, sweep, 1.2f, 4, 0.45f, 0.22f, c->glint_tint);
       }
     }
-    // the special blades shed dust off the tip as they cut
-    if (c->glint_tint) {
-      VxV3d at = {centre.x + tip.x * rad, centre.y + tip.y * rad, centre.z + tip.z * rad};
-      v3 sweep = v3_scale(v3_sub(tip, c->tip_prev), 30.0f);
-      vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, at, sweep, 1.2f, 3, 0.45f, 0.2f, c->glint_tint);
-    }
-  }
-  if (!c->stab) {
     c->tip_prev = tip;
-    c->tip_valid = true;
+    c->tip_valid = ph < 2;
   }
-  // every creature in the arc is hit once per swing
+  // every creature in reach ahead is hit once per swing, from the strike on
   VxCreatures *cs = &g->mobs;
   for (u32 i = 0; i < cs->count; i++) {
     VxCreature *m = &cs->items[i];
     if (m->hit_swing == c->swing_id || m->hp <= 0 || vx_creature_friendly(m->kind)) continue;
-    f32 half, h;
-    vx_creature_size(m, &half, &h);
-    VxV3d q = vx_cb_closest(m, half, h, chest);
+    f32 half, hh;
+    vx_creature_size(m, &half, &hh);
+    VxV3d q = vx_cb_closest(m, half, hh, chest);
     v3 d = {(f32)(q.x - chest.x), (f32)(q.y - chest.y), (f32)(q.z - chest.z)};
     f32 dist = v3_length(d);
     if (dist > c->reach + 0.25f) continue;

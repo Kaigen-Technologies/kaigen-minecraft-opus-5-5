@@ -365,13 +365,14 @@ typedef struct {
   f32 elbow_r; // the right forearm's bend forward from the upper arm
   f32 leg_lx, leg_lz, leg_rx, leg_rz;
   b32 hold; // the right fist raised with its item straight up, as the reference holds a sword between swings
+  f32 item_up; // 1 the item stands straight up out of the fist, 0 it lies along the forearm; blended so it never flips
 } VxPose;
 
 typedef struct {
   VxPose pose;
   f32 time, facing;
   f32 aim_t; // seconds left holding a ranged weapon out along the view
-  f32 kick;  // a shot's recoil, 1 at the shot and easing to 0
+  f32 last_swing_t, from_arm, from_elbow; // where the arm was when the attack began: the wind-up starts there
   b32 swinging;
 } VxPuppet;
 
@@ -497,6 +498,30 @@ force_inline u32 vx_hue_hex(f32 h, f32 w) {
 
 #define VX_MAX_PROJECTILES 256
 
+#define VX_ATK_WIND 0.62f   // share of an attack spent winding up
+#define VX_ATK_STRIKE 0.2f  // share spent on the strike, three times faster; the rest follows through
+
+// one curve for every attack, so the arm and the hit agree: 0..1 through the wind-up (easing out), 1..2 through the strike (accelerating), 2 after
+force_inline f32 vx_attack_phase(f32 u) {
+  if (u < VX_ATK_WIND) {
+    f32 s = u / VX_ATK_WIND;
+    return 1 - (1 - s) * (1 - s);
+  }
+  if (u < VX_ATK_WIND + VX_ATK_STRIKE) {
+    f32 s = (u - VX_ATK_WIND) / VX_ATK_STRIKE;
+    return 1 + s * s;
+  }
+  return 2;
+}
+
+// the sword arm's angle from hanging (0) through forward (pi/2) to overhead (pi) at an attack phase
+#define VX_ATK_HOLD 0.52f
+#define VX_ATK_RAISED 2.75f
+#define VX_ATK_DOWN 0.1f
+force_inline f32 vx_slash_arm(f32 ph) {
+  return ph <= 1 ? VX_ATK_HOLD + (VX_ATK_RAISED - VX_ATK_HOLD) * ph : VX_ATK_RAISED + (VX_ATK_DOWN - VX_ATK_RAISED) * (ph - 1);
+}
+
 typedef struct {
   VxV3d p;
   v3 v;
@@ -512,6 +537,10 @@ typedef struct {
   u32 swing_id;
   u32 trail_tint;
   u32 glint_tint; // the special blades' dust off the tip, 0 for none
+  const VxItemInfo *weapon_info; // the swinging weapon, for what it throws at the strike
+  b32 released;   // the strike has begun: hits, trail and thrown bolts
+  const VxItemInfo *pending; // a shot waiting for the strike of its draw or flick
+  f32 pending_t;
   b32 stab;       // a shortsword thrusts along the view instead of swinging
   v3 tip_prev; // the blade tip last frame, relative to the chest
   b32 tip_valid;
@@ -1192,6 +1221,9 @@ void vx_combat_init(VxCombat *c, Allocator *alloc, u64 seed);
 void vx_combat_swing(VxGame *g, const VxItemInfo *weapon, f32 dur);
 // a projectile weapon's shot along the camera's aim; false when out of ammo or mana
 b32 vx_combat_shoot(VxGame *g, const VxItemInfo *weapon);
+// true when the weapon has its arrow or mana; the shot itself leaves at the strike of the draw or flick
+b32 vx_combat_can_shoot(const VxGame *g, const VxItemInfo *weapon);
+void vx_combat_ready(VxGame *g, const VxItemInfo *weapon, f32 dur);
 void vx_combat_update(VxGame *g, f32 dt);
 // a boss's projectile that hurts the player (kind VX_PROJ_PRISM or VX_PROJ_LANCE)
 void vx_combat_hostile(VxGame *g, VxProjectileKind kind, VxV3d p, v3 v, f32 hue, f32 life, f32 damage);

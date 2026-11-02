@@ -481,8 +481,8 @@ void vx_use_item(VxGame *g, b32 held, b32 pressed, VxRayHit h) {
     if (h.hit) vx_hit_tile(g, h, it);
     return;
   case VX_IK_SWORD:
+    // the whoosh comes with the strike, not the wind-up
     vx_entities_trigger_swing(&g->ents, use);
-    vx_audio_play(&g->audio, VX_SND_SWING);
     g->use_cd = use;
     vx_combat_swing(g, it, use);
     // blades cut grass and flowers, as in Terraria
@@ -490,15 +490,15 @@ void vx_use_item(VxGame *g, b32 held, b32 pressed, VxRayHit h) {
     return;
   case VX_IK_BOW:
   case VX_IK_WAND:
-    g->use_cd = use;
-    if (vx_combat_shoot(g, it)) {
-      vx_entities_trigger_swing(&g->ents, 0.18f);
-      g->ents.puppet.aim_t = 0.6f;
-      g->ents.puppet.kick = 1;
-      vx_audio_play(&g->audio, it->kind == VX_IK_BOW ? VX_SND_BOW : VX_SND_SPARK);
-    } else if (pressed) {
-      vx_game_toast(g, it->kind == VX_IK_BOW ? "Out of arrows" : "Not enough mana");
+    if (!vx_combat_can_shoot(g, it)) {
+      if (pressed) vx_game_toast(g, it->kind == VX_IK_BOW ? "Out of arrows" : "Not enough mana");
+      return;
     }
+    // the bow is drawn and the wand lifted; the shot leaves at the strike
+    g->use_cd = use;
+    vx_entities_trigger_swing(&g->ents, use);
+    g->ents.puppet.aim_t = use + 0.5f;
+    vx_combat_ready(g, it, use);
     return;
   case VX_IK_SUMMON:
     if (!pressed) return;

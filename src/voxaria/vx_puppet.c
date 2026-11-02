@@ -189,12 +189,37 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
   // a swing is driven directly: overhead and behind, down through the front
   pp->swinging = swing_t < 1;
   u8 art = held > 0 && !vx_item_is_block(held) ? vx_item(held)->art : 0;
+  b32 blade = art == VX_ART_BROADSWORD || art == VX_ART_SHORTSWORD, ranged = art == VX_ART_WAND || art == VX_ART_BOW;
+  // every attack winds up from where the arm is, then strikes three times faster (vx_attack_phase)
+  f32 aim = PI * 0.5f + m_clampf(p->pitch, -1.2f, 1.2f);
+  f32 ph = vx_attack_phase(swing_t), wind = m_minf(ph, 1), strike = m_clampf(ph - 1, 0, 1);
+  if (pp->swinging && swing_t < pp->last_swing_t + 1e-4f) pp->from_arm = c->arm_rx, pp->from_elbow = c->elbow_r;
+  pp->last_swing_t = pp->swinging ? swing_t : 2;
+  f32 fa = pp->from_arm, fe = pp->from_elbow;
   if (pp->swinging && art == VX_ART_SHORTSWORD) {
-    // a shortsword stabs: out along the view and back, the elbow straightening into the thrust
-    f32 o = m_sinf(swing_t * PI);
-    c->arm_rx = 0.7f + (PI * 0.5f + m_clampf(p->pitch, -1.0f, 1.0f) - 0.7f) * o;
+    // the fist draws back with the elbow bending, then drives out straight along the view
+    c->arm_rx = ph <= 1 ? fa + (VX_ATK_HOLD - 0.3f - fa) * wind : (VX_ATK_HOLD - 0.3f) + (aim - VX_ATK_HOLD + 0.3f) * strike;
+    c->elbow_r = ph <= 1 ? fe + (1.7f - fe) * wind : 1.7f * (1 - strike);
     c->arm_rz = 0.04f;
-    c->elbow_r = 0.9f * (1 - o);
+  } else if (pp->swinging && blade) {
+    // the elbow rises overhead, cocking the forearm back, then the arm slashes straight down
+    c->arm_rx = ph <= 1 ? fa + (VX_ATK_RAISED - fa) * wind : vx_slash_arm(ph);
+    c->elbow_r = ph <= 1 ? fe + (1.2f - fe) * wind : 1.2f * (1 - strike);
+    c->arm_rz = -0.12f;
+  } else if (pp->swinging && art == VX_ART_WAND) {
+    // the wand lifts above the target with a bent wrist, then flicks down onto it
+    c->arm_rx = ph <= 1 ? fa + (aim + 0.75f - fa) * wind : aim + 0.75f - 0.85f * strike;
+    c->elbow_r = ph <= 1 ? fe + (0.55f - fe) * wind : 0.55f * (1 - strike);
+    c->arm_rz = 0.05f;
+    c->arm_lx = -0.35f, c->arm_lz = 0.25f;
+  } else if (pp->swinging && art == VX_ART_BOW) {
+    // the bow arm locks onto the target in the first third; the string hand pulls back across the chest, then snaps forward
+    f32 up = m_minf(1, wind * 3), draw = ph <= 1 ? wind : 1 - strike;
+    c->arm_rx = fa + (aim - fa) * up;
+    c->elbow_r = fe * (1 - up);
+    c->arm_rz = 0.05f;
+    c->arm_lx = c->arm_rx - 0.55f * draw;
+    c->arm_lz = -0.45f - 0.5f * draw;
   } else if (pp->swinging) {
     f32 s = swing_t * swing_t * (3 - 2 * swing_t);
     c->arm_rx = 3.0f + (-0.1f - 3.0f) * s;
@@ -210,10 +235,9 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
   else pp->facing = p->body_yaw;
   // a shot holds the weapon out along the view, the off hand steadying it
   pp->aim_t = m_maxf(0, pp->aim_t - dt);
-  pp->kick = m_maxf(0, pp->kick - dt * 9.0f);
-  if (pp->aim_t > 0) {
-    // the shot kicks the arm up a touch and it settles back on the target
-    c->arm_rx = PI * 0.5f + m_clampf(p->pitch, -1.2f, 1.2f) + pp->kick * 0.18f;
+  if (pp->aim_t > 0 && !(pp->swinging && ranged)) {
+    // between shots the weapon stays on the target
+    c->arm_rx = aim;
     c->arm_rz = 0.05f;
     c->elbow_r = 0;
     pp->facing = p->yaw;
@@ -235,6 +259,9 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
     c->elbow_r = 0;
   }
   c->hold = holding && !pp->swinging && pp->aim_t <= 0 && p->hook_state == VX_HOOK_NONE;
+  // a blade tips from upright back along the forearm as it is raised, and stands up again after the follow-through
+  if (pp->swinging && blade) c->item_up = m_minf(c->item_up, 1 - wind);
+  else c->item_up = vx_ease_to(c->item_up, c->hold ? 1.0f : 0.0f, 1 - m_expf(-12.0f * dt));
 }
 
 force_inline u32 vx_srgb8(f32 lin) {
@@ -485,15 +512,12 @@ void vx_puppet_body(VxEntities *e, const VxWorld *w, VxV3d cam, VxV3d feet, f32 
       m4 hand = m4_translated(lower, (v3){0, -0.8f, -0.04f});
       // held between swings: the arm's and elbow's turns undone, so the item stands straight up out of the fist
       m4 up = m4_rotate_x(m4_rotate_z(m4_rotate_x(hand, -bend), -q->arm_rz), -q->arm_rx);
-      if (q->hold && !vx_item_is_block(item)) {
-        // the art's diagonal from grip to tip turned to vertical, its face to the side, the tip leaned 20 degrees forward
-        m4 t = m4_rotate_z(m4_rotate_y(m4_rotate_x(up, -0.35f), PI * 0.5f), PI * 0.25f);
-        t = m4_scaled(t, (v3){1.1f, 1.1f, 1.1f});
-        vx_emit_item(e, m4_translated(t, (v3){-0.12f, -0.12f, 0}), item, sky, blk, 0);
-      } else if (!vx_item_is_block(item)) {
-        // the art's grip (its lower-left corner) sits in the fist, the head points along the forearm's swing
-        m4 t = m4_rotate_y(hand, PI * 0.5f);
-        t = m4_rotate_z(t, -PI * 0.75f);
+      if (!vx_item_is_block(item)) {
+        // one turn about the fist from along the forearm (item_up 0) to upright with the tip leaned 20 degrees forward (1)
+        f32 u = m_saturatef(q->item_up);
+        m4 t = m4_rotate_z(m4_rotate_x(hand, -bend * u), -q->arm_rz * u);
+        t = m4_rotate_x(t, -(q->arm_rx + 0.35f) * u - PI * (1 - u));
+        t = m4_rotate_z(m4_rotate_y(t, PI * 0.5f), PI * 0.25f);
         t = m4_scaled(t, (v3){1.1f, 1.1f, 1.1f});
         vx_emit_item(e, m4_translated(t, (v3){-0.12f, -0.12f, 0}), item, sky, blk, 0);
       } else if (vx_shape[item] == VX_SHAPE_CROSS || vx_shape[item] == VX_SHAPE_TORCH) {
