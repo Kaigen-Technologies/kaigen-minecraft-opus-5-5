@@ -105,7 +105,7 @@ VxV3d vx_puppet_hook_hand(const VxPlayer *p) {
 
 hz_internal f32 vx_ease_to(f32 cur, f32 target, f32 k) { return cur + (target - cur) * k; }
 
-void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, f32 swing_t, f32 dt) {
+void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing_t, f32 dt) {
   pp->time += dt;
   f32 t = pp->time;
   f32 hs = m_sqrtf(p->vel.x * p->vel.x + p->vel.z * p->vel.z);
@@ -160,6 +160,12 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, f32 swing_t, f32 dt) {
     g.lean = 0.1f * walk;
     g.bounce = (m_absf(m_cosf(ph)) - 0.5f) * 0.09f * walk + breathe * 0.012f * (1 - walk);
   }
+  // tools, weapons and torches ride in a raised fist out to the side, seen past the body from behind, swaying a little with the stride
+  b32 holding = held > 0 && (!vx_item_is_block(held) || vx_shape[held] == VX_SHAPE_TORCH) && !(p->in_water && !p->on_ground);
+  if (holding) {
+    g.arm_rx = 1.2f + g.arm_rx * 0.12f;
+    g.arm_rz = 0.4f; // positive turns the right arm out
+  }
   f32 k = 1 - m_expf(-16.0f * dt);
   VxPose *c = &pp->pose;
   c->tilt = vx_ease_to(c->tilt, g.tilt, 1 - m_expf(-6.0f * dt));
@@ -208,6 +214,7 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, f32 swing_t, f32 dt) {
     c->arm_rx = m_atan2f((f32)m_sqrt(dx * dx + dz * dz), (f32)-dy);
     c->arm_rz = 0;
   }
+  c->hold = holding && !pp->swinging && pp->aim_t <= 0 && p->hook_state == VX_HOOK_NONE;
 }
 
 force_inline u32 vx_srgb8(f32 lin) {
@@ -453,7 +460,14 @@ void vx_puppet_body(VxEntities *e, const VxWorld *w, VxV3d cam, VxV3d feet, f32 
     if (armor) vx_ebox(e, arm, (v3){-0.21f, -0.06f, -0.21f}, (v3){0.21f, 0.2f, 0.21f}, L, v3_scale(pc->body_c, 1.1f), sky, blk);
     if (s && item > 0) {
       m4 hand = m4_translated(arm, (v3){0, -0.8f, -0.04f});
-      if (!vx_item_is_block(item)) {
+      // held between swings: the arm's turn undone, so the item stands straight up out of the fist
+      m4 up = m4_rotate_x(m4_rotate_z(hand, -q->arm_rz), -q->arm_rx);
+      if (q->hold && !vx_item_is_block(item)) {
+        // the art's diagonal from grip to tip turned to vertical, its face to the side
+        m4 t = m4_rotate_z(m4_rotate_y(up, PI * 0.5f), PI * 0.25f);
+        t = m4_scaled(t, (v3){1.1f, 1.1f, 1.1f});
+        vx_emit_item(e, m4_translated(t, (v3){-0.12f, -0.12f, 0}), item, sky, blk, 0);
+      } else if (!vx_item_is_block(item)) {
         // the art's grip (its lower-left corner) sits in the fist, the head points along the forearm's swing
         m4 t = m4_rotate_y(hand, PI * 0.5f);
         t = m4_rotate_z(t, -PI * 0.75f);
@@ -461,7 +475,7 @@ void vx_puppet_body(VxEntities *e, const VxWorld *w, VxV3d cam, VxV3d feet, f32 
         vx_emit_item(e, m4_translated(t, (v3){-0.12f, -0.12f, 0}), item, sky, blk, 0);
       } else if (vx_shape[item] == VX_SHAPE_CROSS || vx_shape[item] == VX_SHAPE_TORCH) {
         // a sprite points out of the fist, crossed so it reads from any side
-        m4 sp = m4_rotate_x(hand, -PI * 0.5f);
+        m4 sp = q->hold ? up : m4_rotate_x(hand, -PI * 0.5f);
         for (u32 c = 0; c < 2; c++) {
           m4 x = c ? m4_rotate_y(sp, PI * 0.5f) : sp;
           x = m4_translated(x, (v3){-0.3f, -0.12f, 0});

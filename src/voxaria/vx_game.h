@@ -363,6 +363,7 @@ typedef struct {
   f32 head_x, head_y;
   f32 arm_lx, arm_lz, arm_rx, arm_rz;
   f32 leg_lx, leg_lz, leg_rx, leg_rz;
+  b32 hold; // the right fist raised with its item straight up, as the reference holds a sword between swings
 } VxPose;
 
 typedef struct {
@@ -594,7 +595,7 @@ void vx_puppet_hurt_tint(VxPuppetColors *pc, f32 k);
 // dresses the puppet in the worn head, body and leg armour
 void vx_puppet_armor(VxPuppetColors *pc, const VxStack *armor);
 VxV3d vx_puppet_hook_hand(const VxPlayer *p);
-void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, f32 swing_t, f32 dt);
+void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing_t, f32 dt);
 void vx_puppet_build(VxEntities *e, const VxWorld *w, VxV3d cam, const VxPlayer *p, const VxPuppet *pp,
                      const VxPuppetColors *pc, VxItemId item);
 // the armoury's armour stands and weapon plaques, when the camera is near it

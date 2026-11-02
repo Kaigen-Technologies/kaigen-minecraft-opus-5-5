@@ -647,7 +647,7 @@ hz_internal void vx_game_update(VxGame *g, AppMemory *memory) {
   g->underworld += (m_clampf((f32)(VX_CAVERN_Y - 8 - cpos.y) / 20.0f, 0, 1) - g->underworld) * look_k;
 
   vx_entities_update(&g->ents, sdt, &g->world);
-  vx_puppet_animate(&g->ents.puppet, p, g->ents.swing_t, sdt);
+  vx_puppet_animate(&g->ents.puppet, p, g->inv.slot[g->inv.selected].item, g->ents.swing_t, sdt);
   if (p->events & VX_PEV_DOUBLE_JUMP) vx_entities_cloud_puff(&g->ents, p->pos);
   // movement sounds
   g->audio.trace = g->scripted;
