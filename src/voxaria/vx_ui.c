@@ -1687,7 +1687,7 @@ hz_internal void vx_hud(VxGame *g) {
                            .offset = {-12, VX_BADGE_CLEAR},
                            .z_index = 6,
                            .pointer_capture_mode = UI_POINTER_CAPTURE_MODE_PASSTHROUGH}}) {
-    ui_text(ui_string("F3 debug \xc2\xb7 E inventory \xc2\xb7 B wardrobe \xc2\xb7 Esc menu"),
+    ui_text(ui_string("F3 debug \xc2\xb7 E inventory \xc2\xb7 B wardrobe \xc2\xb7 Q/R camera \xc2\xb7 Esc menu"),
             ui_text_config({.fontSize = 12, .textColor = {255, 255, 255, 178}, .outlineColor = {0, 0, 0, 200},
                             .outlineWidth = 1}));
   }
