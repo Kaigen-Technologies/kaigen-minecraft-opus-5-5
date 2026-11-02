@@ -471,8 +471,8 @@ void vx_puppet_body(VxEntities *e, const VxWorld *w, VxV3d cam, VxV3d feet, f32 
       // held between swings: the arm's and elbow's turns undone, so the item stands straight up out of the fist
       m4 up = m4_rotate_x(m4_rotate_z(m4_rotate_x(hand, -bend), -q->arm_rz), -q->arm_rx);
       if (q->hold && !vx_item_is_block(item)) {
-        // the art's diagonal from grip to tip turned to vertical, its face to the side
-        m4 t = m4_rotate_z(m4_rotate_y(up, PI * 0.5f), PI * 0.25f);
+        // the art's diagonal from grip to tip turned to vertical, its face to the side, the tip leaned 20 degrees forward
+        m4 t = m4_rotate_z(m4_rotate_y(m4_rotate_x(up, -0.35f), PI * 0.5f), PI * 0.25f);
         t = m4_scaled(t, (v3){1.1f, 1.1f, 1.1f});
         vx_emit_item(e, m4_translated(t, (v3){-0.12f, -0.12f, 0}), item, sky, blk, 0);
       } else if (!vx_item_is_block(item)) {
