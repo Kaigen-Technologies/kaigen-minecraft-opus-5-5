@@ -256,6 +256,12 @@ hz_internal void vx_handle_input(VxGame *g, f32 dt) {
     vx_game_set_mode(g, VX_MODE_WARDROBE);
     return;
   }
+  // Q and R swing the camera round the player for a side view; the player keeps aiming where they face
+  if (g->cam.mode == VX_CAM_THIRD) {
+    f32 turn = (vx_down(g, KEY_R) ? 1.6f : 0.0f) - (vx_down(g, KEY_Q) ? 1.6f : 0.0f);
+    g->cam.orbit = m_fmodf(g->cam.orbit + turn * dt + PI * 3, PI * 2) - PI;
+    if (vx_pressed(g, KEY_Q) && vx_pressed(g, KEY_R)) g->cam.orbit = 0;
+  }
   g->time_scale = 1;
   if (vx_down(g, KEY_T)) g->time_scale = (vx_down(g, KEY_LEFT_SHIFT) || vx_down(g, KEY_RIGHT_SHIFT)) ? -36.0f : 36.0f;
 
@@ -901,14 +907,16 @@ hz_internal VxItemId vx_item_by_name(String name) {
     u32 id = k <= I_COUNT - B_COUNT ? k + B_COUNT - 1 : k - (I_COUNT - B_COUNT);
     const char *l = vx_item(id)->name;
     if (!l) continue;
-    u32 i = 0;
-    for (; i < name.len && l[i]; i++) {
-      char a = name.value[i], b = l[i] == ' ' ? '_' : l[i];
+    // spaces match underscores and apostrophes may be left out: nights_edge is Night's Edge
+    u32 i = 0, j = 0;
+    for (; i < name.len && l[j]; i++, j++) {
+      if (l[j] == '\'' && name.value[i] != '\'') j++;
+      char a = name.value[i], b = l[j] == ' ' ? '_' : l[j];
       if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
       if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
       if (a != b) break;
     }
-    if (i == name.len && l[i] == 0) return (VxItemId)id;
+    if (i == name.len && l[j] == 0) return (VxItemId)id;
   }
   return 0;
 }

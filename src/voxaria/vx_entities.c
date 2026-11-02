@@ -205,7 +205,7 @@ hz_internal void vx_debris_build(VxEntities *e, VxV3d cam) {
 
 // each kind's share of a 16384 pool, scaled to the platform's, so dense leaves never starve the mist or the embers
 hz_internal const u16 VX_MOTE_QUOTA[VX_MOTE_KIND_COUNT] = {1400, 400, 200, 600, 1200, 300, 1500, 6000,
-                                                          400, 600, 300, 600, 32, 32, 200, 300};
+                                                          400, 600, 300, 600, 320, 64, 200, 1200};
 
 force_inline u32 vx_rgba8(f32 r, f32 g, f32 b, f32 a) {
   return (u32)(m_clampf(r, 0, 1) * 255.0f + 0.5f) | (u32)(m_clampf(g, 0, 1) * 255.0f + 0.5f) << 8 |

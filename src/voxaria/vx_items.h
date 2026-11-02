@@ -102,7 +102,7 @@ typedef enum {
   X(GOLD_AXE, "Gold Axe", VX_IK_AXE, VX_ART_AXE, VX_IM_GOLD, 55, 7, 260, 1, 1, 0)                                  \
   X(WOODEN_BOW, "Wooden Bow", VX_IK_BOW, VX_ART_BOW, VX_IM_WOOD, 0, 4, 450, 1, 0, 0)                               \
   X(WOODEN_ARROW, "Wooden Arrow", VX_IK_AMMO, VX_ART_ARROW, VX_IM_WOOD, 0, 5, 0, 999, 0, 0)                        \
-  X(WAND_OF_SPARKING, "Wand of Sparking", VX_IK_WAND, VX_ART_WAND, VX_IM_RED, 0, 8, 420, 1, 1, 2)                  \
+  X(WAND_OF_SPARKING, "Wand of Sparking", VX_IK_WAND, VX_ART_WAND, VX_IM_RED, 0, 8, 140, 1, 1, 1)                  \
   X(GEL, "Gel", VX_IK_MATERIAL, VX_ART_GEL, VX_IM_BLUE, 0, 0, 0, 999, 0, 0)                                        \
   X(LENS, "Lens", VX_IK_MATERIAL, VX_ART_LENS, VX_IM_RED, 0, 0, 0, 999, 0, 0)                                      \
   X(FALLEN_STAR, "Fallen Star", VX_IK_MATERIAL, VX_ART_STAR, VX_IM_GOLD, 0, 0, 0, 999, 1, 0)                       \

@@ -6,8 +6,9 @@
 #define VX_CRIT_CHANCE 0.04f
 #define VX_ARROW_SPEED 30.0f
 #define VX_ARROW_GRAVITY 16.0f
-#define VX_SPARK_SPEED 15.0f
-#define VX_SPARK_GRAVITY 13.0f
+#define VX_SPARK_SPEED 28.0f
+#define VX_BEAM_SPEED 24.0f
+#define VX_FROST_SPEED 21.0f
 
 hz_internal u32 vx_cb_rgba(u32 rgb, f32 a) { return ((rgb >> 16) & 255) | (rgb & 0xFF00) | ((rgb & 255) << 16) | (u32)(a * 255.0f) << 24; }
 // an srgb 0xRRGGBB as linear rgb, for self-lit boxes
@@ -28,11 +29,16 @@ hz_internal u32 vx_cb_trail_tint(const VxItemInfo *it) {
   case VX_IM_IRON: return vx_cb_rgba(0xD0DCF0, 0.9f);
   case VX_IM_SILVER: return vx_cb_rgba(0xE8F2FF, 0.9f);
   case VX_IM_GOLD: return vx_cb_rgba(0xFFE070, 0.9f);
+  case VX_IM_BLUE: return vx_cb_rgba(0x8FE4FF, 0.9f);
+  case VX_IM_WHITE: return vx_cb_rgba(0x9CF0FF, 0.9f);
+  case VX_IM_PURPLE: return vx_cb_rgba(0xA050FF, 0.9f);
   default: return vx_cb_rgba(0xFFFFFF, 0.9f);
   }
 }
 
 hz_internal VxV3d vx_cb_chest(const VxPlayer *p) { return (VxV3d){p->pos.x, p->pos.y + VX_CHEST_Y, p->pos.z}; }
+hz_internal VxV3d vx_cb_aim_point(const VxGame *g);
+hz_internal VxV3d vx_cb_hand(const VxGame *g, v3 a, f32 reach);
 
 void vx_combat_swing(VxGame *g, const VxItemInfo *weapon, f32 dur) {
   VxCombat *c = &g->combat;
@@ -46,6 +52,24 @@ void vx_combat_swing(VxGame *g, const VxItemInfo *weapon, f32 dur) {
   c->knock = broad ? 8.0f : 5.5f;
   c->trail_tint = vx_cb_trail_tint(weapon);
   c->tip_valid = false;
+  c->stab = weapon->art == VX_ART_SHORTSWORD;
+  if (c->stab) c->reach = 2.7f;
+  c->glint_tint = weapon == vx_item(I_NIGHTS_EDGE)       ? vx_cb_rgba(0xC060FF, 1)
+                  : weapon == vx_item(I_ENCHANTED_SWORD) ? vx_cb_rgba(0xFF9CF0, 1)
+                  : weapon == vx_item(I_ICE_BLADE)       ? vx_cb_rgba(0xE0F8FF, 1)
+                                                         : 0;
+  // as in Terraria, the Enchanted Sword throws a blade of light and the Ice Blade a shard with every swing
+  if ((weapon == vx_item(I_ENCHANTED_SWORD) || weapon == vx_item(I_ICE_BLADE)) && c->proj_count < VX_MAX_PROJECTILES) {
+    b32 beam = weapon == vx_item(I_ENCHANTED_SWORD);
+    VxV3d o = vx_cb_chest(&g->player);
+    VxV3d aim = vx_cb_aim_point(g);
+    v3 a = v3_normalize((v3){(f32)(aim.x - o.x), (f32)(aim.y - o.y), (f32)(aim.z - o.z)});
+    o.x += a.x * 1.1, o.y += a.y * 1.1, o.z += a.z * 1.1;
+    c->proj[c->proj_count++] = (VxProjectile){.p = o, .v = v3_scale(a, beam ? VX_BEAM_SPEED : VX_FROST_SPEED),
+                                              .life = beam ? 0.7f : 0.8f, .damage = weapon->damage * (beam ? 0.8f : 0.6f),
+                                              .knock = 3.0f, .hue = random_f32(&c->rng),
+                                              .kind = (u8)(beam ? VX_PROJ_BEAM : VX_PROJ_FROST)};
+  }
 }
 
 // damage with Terraria's ±15 % spread and a crit chance; true if it crit
@@ -54,10 +78,24 @@ hz_internal f32 vx_cb_roll(VxCombat *c, f32 base, b32 *crit) {
   return base * random_f32_range(&c->rng, 0.85f, 1.15f);
 }
 
-// what the crosshair is on: the first block or creature along the camera's ray, within 64 blocks
+// a camera swung round the player films from the side: the player still aims where they face
+hz_internal b32 vx_cb_side_view(const VxGame *g) { return g->cam.mode == VX_CAM_THIRD && m_absf(g->cam.orbit) > 0.05f; }
+
+hz_internal v3 vx_cb_aim_dir(const VxGame *g) {
+  return v3_normalize(vx_cb_side_view(g) ? vx_player_forward(&g->player) : g->cam.fwd);
+}
+
+// the weapon hand when held out along a: the right shoulder plus a straight arm
+hz_internal VxV3d vx_cb_hand(const VxGame *g, v3 a, f32 reach) {
+  const VxPlayer *p = &g->player;
+  v3 r = {m_cosf(p->yaw), 0, -m_sinf(p->yaw)};
+  return (VxV3d){p->pos.x + r.x * 0.58 + a.x * reach, p->pos.y + 1.84 + a.y * reach, p->pos.z + r.z * 0.58 + a.z * reach};
+}
+
+// what the crosshair is on: the first block or creature along the aim, within 64 blocks
 hz_internal VxV3d vx_cb_aim_point(const VxGame *g) {
-  v3 f = v3_normalize(g->cam.fwd);
-  VxV3d o = g->cam.pos;
+  v3 f = vx_cb_aim_dir(g);
+  VxV3d o = vx_cb_side_view(g) ? vx_player_eye(&g->player) : g->cam.pos;
   const VxCreatures *cs = &g->mobs;
   for (f32 t = 0.5f; t < 64.0f; t += 0.2f) {
     VxV3d q = {o.x + f.x * t, o.y + f.y * t, o.z + f.z * t};
@@ -79,12 +117,11 @@ b32 vx_combat_shoot(VxGame *g, const VxItemInfo *weapon) {
   VxCombat *c = &g->combat;
   if (c->proj_count >= VX_MAX_PROJECTILES) return false;
   const VxPlayer *p = &g->player;
-  // fired from the weapon hand at what the crosshair is on, so third person's shoulder camera aims true
-  v3 f = v3_normalize(g->cam.fwd), r = v3_cross(f, (v3){0, 1, 0});
-  r = v3_length(r) < 1e-3f ? (v3){1, 0, 0} : v3_normalize(r);
-  VxV3d o = {p->pos.x + r.x * 0.35, p->pos.y + 1.95, p->pos.z + r.z * 0.35}, aim = vx_cb_aim_point(g);
-  v3 a = v3_normalize((v3){(f32)(aim.x - o.x), (f32)(aim.y - o.y), (f32)(aim.z - o.z)});
-  o.x += a.x * 0.8, o.y += a.y * 0.8, o.z += a.z * 0.8;
+  // fired from the weapon's tip at what the crosshair is on, so third person's shoulder camera aims true
+  UNUSED(p);
+  VxV3d aim = vx_cb_aim_point(g), sh = vx_cb_hand(g, vx_cb_aim_dir(g), 0);
+  v3 a = v3_normalize((v3){(f32)(aim.x - sh.x), (f32)(aim.y - sh.y), (f32)(aim.z - sh.z)});
+  VxV3d o = vx_cb_hand(g, a, weapon->kind == VX_IK_WAND ? 1.75f : 1.2f);
   VxProjectile pr = {.p = o};
   if (weapon->kind == VX_IK_BOW) {
     if (vx_inventory_remove(&g->inv, I_WOODEN_ARROW, 1) == 0) return false;
@@ -93,14 +130,22 @@ b32 vx_combat_shoot(VxGame *g, const VxItemInfo *weapon) {
     pr.damage = (f32)(weapon->damage + vx_item(I_WOODEN_ARROW)->damage);
     pr.knock = 5.0f;
     pr.life = 4.0f;
-  } else {
-    if (!vx_vitals_use_mana(&g->vitals, weapon->mana)) return false;
+  } else if (vx_vitals_use_mana(&g->vitals, weapon->mana)) {
     pr.kind = VX_PROJ_SPARK;
     pr.v = v3_scale(a, VX_SPARK_SPEED);
     pr.damage = weapon->damage;
     pr.knock = 2.5f;
-    pr.life = 2.2f;
-    vx_entities_burst(&g->ents, VX_MOTE_SPARK, o, v3_scale(a, 3.0f), 2.5f, 8, 0.4f, 0.12f, vx_cb_rgba(0xFFB040, 1));
+    pr.life = 1.3f;
+    pr.hue = random_f32(&c->rng);
+    // the wand tip blooms white with every bolt and throws a few pastel glints
+    VxV3d tip = o;
+    vx_entities_burst(&g->ents, VX_MOTE_FLASH, tip, v3_scale(a, 1.0f), 0.3f, 1, 0.26f, 1.7f, vx_cb_rgba(0xFFF6FF, 1));
+    vx_entities_burst(&g->ents, VX_MOTE_FLASH, tip, v3_scale(a, 2.5f), 1.2f, 1, 0.3f, 1.1f, vx_cb_rgba(0xFFC8F0, 1));
+    vx_entities_burst(&g->ents, VX_MOTE_FLASH, tip, v3_scale(a, 2.5f), 1.2f, 1, 0.3f, 1.1f, vx_cb_rgba(0xC8F0FF, 1));
+    vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, tip, v3_scale(a, 5.0f), 2.6f, 7, 0.6f, 0.32f, vx_cb_rgba(0xFFC8F4, 1));
+    vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, tip, v3_scale(a, 5.0f), 2.6f, 6, 0.6f, 0.32f, vx_cb_rgba(0xC8F4FF, 1));
+  } else {
+    return false;
   }
   c->proj[c->proj_count++] = pr;
   c->shots++;
@@ -138,7 +183,7 @@ hz_internal void vx_cb_melee(VxGame *g, f32 dt) {
     c->t = 0;
     return;
   }
-  v3 a = v3_normalize(g->cam.fwd);
+  v3 a = vx_cb_aim_dir(g);
   v3 r = v3_cross(a, (v3){0, 1, 0});
   r = v3_length(r) < 1e-3f ? (v3){1, 0, 0} : v3_normalize(r);
   v3 up = v3_cross(r, a);
@@ -149,7 +194,22 @@ hz_internal void vx_cb_melee(VxGame *g, f32 dt) {
   f32 e = 1 - (1 - k) * (1 - k);
   f32 th = m_lerpf(0.9f, 4.0f, e), rad = c->reach * 0.72f;
   v3 tip = v3_add(v3_scale(r, m_cosf(th)), v3_scale(up, m_sinf(th)));
-  if (c->tip_valid) {
+  if (c->stab) {
+    // a thrust: a narrow streak out along the view and back, a glint at the point
+    f32 o = m_sinf(k * PI);
+    VxV3d s0 = {chest.x + r.x * 0.3 + a.x * 0.5, chest.y + a.y * 0.5 - 0.1, chest.z + r.z * 0.3 + a.z * 0.5};
+    f32 len = c->reach * o;
+    for (u32 s = 0; s < 6; s++) {
+      f32 f = ((f32)s + random_f32(&c->rng)) / 6.0f * len;
+      VxV3d at = {s0.x + a.x * f, s0.y + a.y * f, s0.z + a.z * f};
+      vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.05f, 1, 0.12f, 0.14f + 0.1f * f / m_maxf(len, 0.1f),
+                        c->trail_tint);
+    }
+    if (o > 0.9f && random_f32(&c->rng) < 0.5f)
+      vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, (VxV3d){s0.x + a.x * len, s0.y + a.y * len, s0.z + a.z * len}, v3_scale(a, 1.0f),
+                        0.6f, 1, 0.25f, 0.22f, vx_cb_rgba(0xFFFFFF, 1));
+    c->tip_valid = false;
+  } else if (c->tip_valid) {
     // a crescent between last frame's blade and this one's, brightest at the edge
     for (u32 s = 0; s < 8; s++) {
       f32 f = ((f32)s + random_f32(&c->rng)) / 8.0f;
@@ -157,13 +217,22 @@ hz_internal void vx_cb_melee(VxGame *g, f32 dt) {
       for (u32 band = 0; band < 4; band++) {
         f32 rr = rad * (1.0f - 0.1f * (f32)band);
         VxV3d at = {centre.x + t.x * rr, centre.y + t.y * rr, centre.z + t.z * rr};
-        vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.1f, 1, 0.2f, 0.36f - 0.06f * (f32)band,
-                          c->trail_tint);
+        // the leading edge burns near white, the inner bands in the blade's colour
+        u32 tint = band == 0 ? (c->trail_tint & 0xFF000000u) | ((c->trail_tint & 0xFEFEFEu) >> 1) + 0x7F7F7Fu : c->trail_tint;
+        vx_entities_burst(&g->ents, VX_MOTE_TRAIL, at, (v3){0, 0, 0}, 0.1f, 1, 0.22f, 0.4f - 0.07f * (f32)band, tint);
       }
     }
+    // the special blades shed dust off the tip as they cut
+    if (c->glint_tint) {
+      VxV3d at = {centre.x + tip.x * rad, centre.y + tip.y * rad, centre.z + tip.z * rad};
+      v3 sweep = v3_scale(v3_sub(tip, c->tip_prev), 30.0f);
+      vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, at, sweep, 1.2f, 3, 0.45f, 0.2f, c->glint_tint);
+    }
   }
-  c->tip_prev = tip;
-  c->tip_valid = true;
+  if (!c->stab) {
+    c->tip_prev = tip;
+    c->tip_valid = true;
+  }
   // every creature in the arc is hit once per swing
   VxCreatures *cs = &g->mobs;
   for (u32 i = 0; i < cs->count; i++) {
@@ -219,6 +288,46 @@ hz_internal b32 vx_cb_hostile(VxGame *g, VxProjectile *pr, f32 dt) {
   return true;
 }
 
+// the wand's bolt in its rainbow at this moment: it cycles as it flies
+hz_internal u32 vx_cb_bolt_hex(const VxProjectile *pr, f32 back) { return vx_hue_hex(pr->hue + pr->age * 1.6f - back * 2.0f, 0.18f); }
+
+// a magic bolt's trail along this frame's travel, so it stays unbroken at any frame rate, and the dust it sheds
+hz_internal void vx_cb_magic_wake(VxGame *g, VxProjectile *pr, f32 travel, f32 dt) {
+  VxCombat *c = &g->combat;
+  u32 n = MIN((u32)m_ceilf(travel / 0.18f), 16u);
+  for (u32 k = 0; k < n; k++) {
+    f32 back = (f32)k / (f32)n * dt;
+    VxV3d q = {pr->p.x - pr->v.x * back, pr->p.y - pr->v.y * back, pr->p.z - pr->v.z * back};
+    u32 tint = pr->kind == VX_PROJ_SPARK ? vx_cb_rgba(vx_cb_bolt_hex(pr, back), 0.95f)
+               : pr->kind == VX_PROJ_BEAM ? vx_cb_rgba((k & 1) ? 0x80F0FF : 0xFF9CF0, 0.85f)
+                                          : vx_cb_rgba(0xA8ECFF, 0.85f);
+    vx_entities_burst(&g->ents, VX_MOTE_TRAIL, q, (v3){0, 0, 0}, 0.06f, 1, pr->kind == VX_PROJ_SPARK ? 0.32f : 0.2f,
+                      pr->kind == VX_PROJ_SPARK ? 0.6f : 0.34f, tint);
+  }
+  // pastel glints drift off the line and hang a moment: the reference's sparkling stream
+  hz_internal const u32 pastel[4] = {0xFFB4EC, 0xD2B8FF, 0xFFFFFF, 0xB4F0FF};
+  u32 glints = pr->kind == VX_PROJ_SPARK ? 6 : 2;
+  for (u32 k = 0; k < glints; k++) {
+    u32 tint = pr->kind == VX_PROJ_FROST ? 0xE8FAFF : pastel[random_u32(&c->rng) & 3u];
+    vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, pr->p, v3_scale(pr->v, 0.1f), 1.8f, 1, 0.9f, 0.34f, vx_cb_rgba(tint, 1));
+  }
+  // soft pastel puffs swell along the wand's stream, so it reads as a glowing cloud and not a line
+  if (pr->kind == VX_PROJ_SPARK && random_f32(&c->rng) < 0.6f)
+    vx_entities_burst(&g->ents, VX_MOTE_FLASH, pr->p, v3_scale(pr->v, 0.05f), 0.8f, 1, 0.4f, 0.9f,
+                      vx_cb_rgba(pastel[random_u32(&c->rng) & 3u], 0.7f));
+}
+
+// a magic bolt bursting where it lands: a white flash, a ring and a spray of glints
+hz_internal void vx_cb_magic_pop(VxGame *g, const VxProjectile *pr) {
+  b32 spark = pr->kind == VX_PROJ_SPARK;
+  u32 ring = spark ? vx_cb_bolt_hex(pr, 0) : pr->kind == VX_PROJ_BEAM ? 0xFF9CF0 : 0xA8ECFF;
+  f32 s = pr->life <= 0 ? 0.6f : 1.0f;
+  vx_entities_burst(&g->ents, VX_MOTE_FLASH, pr->p, (v3){0, 0, 0}, 0, 1, 0.18f, 1.1f * s, vx_cb_rgba(0xFFFFFF, 1));
+  vx_entities_burst(&g->ents, VX_MOTE_RING, pr->p, (v3){0, 0, 0}, 0, 1, 0.3f, 1.2f * s, vx_cb_rgba(ring, 1));
+  vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, pr->p, (v3){0, 1.0f, 0}, 4.5f * s, 8, 0.5f, 0.24f, vx_cb_rgba(0xFFC0F0, 1));
+  vx_entities_burst(&g->ents, VX_MOTE_SPARKLE, pr->p, (v3){0, 1.0f, 0}, 4.5f * s, 6, 0.5f, 0.24f, vx_cb_rgba(spark ? 0xC0F4FF : ring, 1));
+}
+
 hz_internal void vx_cb_projectiles(VxGame *g, f32 dt) {
   VxCombat *c = &g->combat;
   const VxWorld *w = &g->world;
@@ -233,7 +342,9 @@ hz_internal void vx_cb_projectiles(VxGame *g, f32 dt) {
     }
     b32 dead = pr->life <= 0;
     b32 spark = pr->kind == VX_PROJ_SPARK, star = pr->kind == VX_PROJ_STAR;
-    if (!star) pr->v.y -= (spark ? VX_SPARK_GRAVITY : VX_ARROW_GRAVITY) * dt;
+    b32 magic = spark || pr->kind == VX_PROJ_BEAM || pr->kind == VX_PROJ_FROST;
+    pr->age += dt;
+    if (!star && !magic) pr->v.y -= VX_ARROW_GRAVITY * dt;
     f32 travel = v3_length(pr->v) * dt;
     u32 steps = MAX((u32)m_ceilf(travel / 0.35f), 1u);
     f32 sdt = dt / (f32)steps;
@@ -252,8 +363,9 @@ hz_internal void vx_cb_projectiles(VxGame *g, f32 dt) {
           vx_entities_burst(&g->ents, VX_MOTE_SPARK, at, (v3){0, 4.0f, 0}, 4.0f, 24, 0.9f, 0.14f, vx_cb_rgba(0xFFE070, 1));
           vx_audio_play(&g->audio, VX_SND_SHIMMER);
           if (g->scripted) log_info("loot: fallen star landed at % % %", fmt_f32_p((f32)at.x, 1), fmt_f32_p((f32)at.y, 1), fmt_f32_p((f32)at.z, 1));
-        } else if (spark) vx_entities_burst(&g->ents, VX_MOTE_SPARK, pr->p, (v3){0, 2.5f, 0}, 3.0f, 10, 0.5f, 0.12f, vx_cb_rgba(0xFFA030, 1));
-        else {
+        } else if (magic) {
+          vx_cb_magic_pop(g, pr);
+        } else {
           vx_entities_dust(&g->ents, b, vx_floor_i(pr->p.x), vx_floor_i(pr->p.y), vx_floor_i(pr->p.z), 3);
           f64 dx = pr->p.x - g->player.pos.x, dy = pr->p.y - g->player.pos.y, dz = pr->p.z - g->player.pos.z;
           vx_audio_play_vol(&g->audio, VX_SND_ARROW_HIT, 0.8f * m_saturatef(1 - (f32)m_sqrt(dx * dx + dy * dy + dz * dz) / 32));
@@ -270,11 +382,17 @@ hz_internal void vx_cb_projectiles(VxGame *g, f32 dt) {
           continue;
         v3 dir = {pr->v.x, 0, pr->v.z};
         dir = v3_length(dir) > 1e-3f ? v3_normalize(dir) : (v3){0, 0, 1};
-        if (vx_cb_hit(g, m, pr->damage, dir, pr->knock, spark ? "Wand of Sparking" : "Wooden Arrow")) dead = true;
+        const char *by = spark ? "Wand of Sparking" : pr->kind == VX_PROJ_BEAM ? "Enchanted Sword" : pr->kind == VX_PROJ_FROST ? "Ice Blade" : "Wooden Arrow";
+        if (vx_cb_hit(g, m, pr->damage, dir, pr->knock, by)) {
+          dead = true;
+          if (magic) vx_cb_magic_pop(g, pr);
+        }
         break;
       }
     }
     if (dead) {
+      // a bolt that runs out of range fades in a smaller pop
+      if (magic && pr->life <= 0) vx_cb_magic_pop(g, pr);
       c->proj[i] = c->proj[--c->proj_count];
       continue;
     }
@@ -291,11 +409,11 @@ hz_internal void vx_cb_projectiles(VxGame *g, f32 dt) {
       if (random_f32(&c->rng) < 0.5f)
         vx_entities_burst(&g->ents, VX_MOTE_SPARK, pr->p, v3_scale(pr->v, 0.05f), 1.5f, 1, 0.8f, 0.1f, vx_cb_rgba(0xFFF0A0, 1));
     }
-    // a spark leaves a burning wake
-    if (spark) {
-      vx_entities_burst(&g->ents, VX_MOTE_TRAIL, pr->p, (v3){0, 0.4f, 0}, 0.25f, 2, 0.3f, 0.22f, vx_cb_rgba(0xFF7A20, 0.9f));
-      if (random_f32(&c->rng) < 0.3f)
-        vx_entities_burst(&g->ents, VX_MOTE_SPARK, pr->p, (v3){0, 0, 0}, 1.2f, 1, 0.5f, 0.08f, vx_cb_rgba(0xFFD060, 1));
+    if (magic) vx_cb_magic_wake(g, pr, travel, dt);
+    // an arrow draws a faint white line behind it
+    if (pr->kind == VX_PROJ_ARROW) {
+      VxV3d q = {pr->p.x - pr->v.x * dt * 0.5, pr->p.y - pr->v.y * dt * 0.5, pr->p.z - pr->v.z * dt * 0.5};
+      vx_entities_burst(&g->ents, VX_MOTE_TRAIL, q, (v3){0, 0, 0}, 0.02f, 1, 0.14f, 0.07f, vx_cb_rgba(0xFFFFFF, 0.5f));
     }
     i++;
   }
@@ -375,8 +493,25 @@ void vx_combat_build(VxEntities *e, const VxCombat *c, VxV3d cam) {
       // a crossed pair of glowing slabs reads as a star from any side
       vx_ebox_ex(e, f, (v3){-0.32f, -0.08f, -0.32f}, (v3){0.32f, 0.08f, 0.32f}, L, (v3){1.4f, 1.15f, 0.4f}, VX_BOX_SELF_LIT, 0);
       vx_ebox_ex(e, f, (v3){-0.08f, -0.32f, -0.32f}, (v3){0.08f, 0.32f, 0.32f}, L, (v3){1.4f, 1.15f, 0.4f}, VX_BOX_SELF_LIT, 0);
+    } else if (pr->kind == VX_PROJ_BEAM) {
+      // a sword of light: blade, guard and hilt, cyan with a white core
+      v3 cyan = {0.25f, 0.95f, 1.0f}, pink = {1.0f, 0.4f, 0.9f};
+      vx_ebox_ex(e, f, (v3){-0.06f, -0.12f, -0.2f}, (v3){0.06f, 0.12f, 0.85f}, L, cyan, VX_BOX_HOT_GLOW, 0);
+      vx_ebox_ex(e, f, (v3){-0.025f, -0.05f, -0.15f}, (v3){0.025f, 0.05f, 0.8f}, L, (v3){1, 1, 1}, VX_BOX_HOT_GLOW, 0);
+      vx_ebox_ex(e, f, (v3){-0.06f, -0.3f, -0.3f}, (v3){0.06f, 0.3f, -0.2f}, L, pink, VX_BOX_HOT_GLOW, 0);
+      vx_ebox_ex(e, f, (v3){-0.05f, -0.05f, -0.6f}, (v3){0.05f, 0.05f, -0.3f}, L, pink, VX_BOX_HOT_GLOW, 0);
+    } else if (pr->kind == VX_PROJ_FROST) {
+      // an ice shard: a long diamond crossed with a short one, turning as it flies
+      m4 s = m4_rotate_z(f, pr->age * 9.0f);
+      m4 d = m4_rotate_y(m4_rotate_x(s, 0.785f), 0.0f);
+      v3 ice = {0.55f, 0.9f, 1.0f};
+      vx_ebox_ex(e, s, (v3){-0.07f, -0.07f, -0.45f}, (v3){0.07f, 0.07f, 0.45f}, L, ice, VX_BOX_HOT_GLOW, 0);
+      vx_ebox_ex(e, d, (v3){-0.14f, -0.03f, -0.14f}, (v3){0.14f, 0.03f, 0.14f}, L, (v3){0.9f, 1.0f, 1.0f}, VX_BOX_HOT_GLOW, 0);
     } else {
-      vx_ebox_ex(e, f, (v3){-0.1f, -0.1f, -0.1f}, (v3){0.1f, 0.1f, 0.1f}, L, (v3){1.0f, 0.55f, 0.12f}, VX_BOX_SELF_LIT, 0);
+      // the wand's bolt: a white-hot core in a sheath of its current colour
+      v3 col = vx_cb_lin(vx_cb_bolt_hex(pr, 0));
+      vx_ebox_ex(e, f, (v3){-0.06f, -0.06f, -0.4f}, (v3){0.06f, 0.06f, 0.4f}, L, col, VX_BOX_HOT_GLOW, 0);
+      vx_ebox_ex(e, f, (v3){-0.03f, -0.03f, -0.35f}, (v3){0.03f, 0.03f, 0.45f}, L, (v3){1, 1, 1}, VX_BOX_HOT_GLOW, 0);
     }
   }
 }
@@ -386,4 +521,5 @@ void vx_combat_build(VxEntities *e, const VxCombat *c, VxV3d cam) {
 #undef VX_ARROW_SPEED
 #undef VX_ARROW_GRAVITY
 #undef VX_SPARK_SPEED
-#undef VX_SPARK_GRAVITY
+#undef VX_BEAM_SPEED
+#undef VX_FROST_SPEED

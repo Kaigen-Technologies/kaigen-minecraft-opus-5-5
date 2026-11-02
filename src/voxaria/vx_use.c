@@ -494,6 +494,7 @@ void vx_use_item(VxGame *g, b32 held, b32 pressed, VxRayHit h) {
     if (vx_combat_shoot(g, it)) {
       vx_entities_trigger_swing(&g->ents, 0.18f);
       g->ents.puppet.aim_t = 0.6f;
+      g->ents.puppet.kick = 1;
       vx_audio_play(&g->audio, it->kind == VX_IK_BOW ? VX_SND_BOW : VX_SND_SPARK);
     } else if (pressed) {
       vx_game_toast(g, it->kind == VX_IK_BOW ? "Out of arrows" : "Not enough mana");

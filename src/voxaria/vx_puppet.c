@@ -188,7 +188,14 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
   c->wing_flap = vx_ease_to(c->wing_flap, flap, 1 - m_expf(-30.0f * dt));
   // a swing is driven directly: overhead and behind, down through the front
   pp->swinging = swing_t < 1;
-  if (pp->swinging) {
+  u8 art = held > 0 && !vx_item_is_block(held) ? vx_item(held)->art : 0;
+  if (pp->swinging && art == VX_ART_SHORTSWORD) {
+    // a shortsword stabs: out along the view and back, the elbow straightening into the thrust
+    f32 o = m_sinf(swing_t * PI);
+    c->arm_rx = 0.7f + (PI * 0.5f + m_clampf(p->pitch, -1.0f, 1.0f) - 0.7f) * o;
+    c->arm_rz = 0.04f;
+    c->elbow_r = 0.9f * (1 - o);
+  } else if (pp->swinging) {
     f32 s = swing_t * swing_t * (3 - 2 * swing_t);
     c->arm_rx = 3.0f + (-0.1f - 3.0f) * s;
     c->arm_rz = -0.12f;
@@ -203,13 +210,21 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
   else pp->facing = p->body_yaw;
   // a shot holds the weapon out along the view, the off hand steadying it
   pp->aim_t = m_maxf(0, pp->aim_t - dt);
+  pp->kick = m_maxf(0, pp->kick - dt * 9.0f);
   if (pp->aim_t > 0) {
-    c->arm_rx = PI * 0.5f + m_clampf(p->pitch, -1.2f, 1.2f);
+    // the shot kicks the arm up a touch and it settles back on the target
+    c->arm_rx = PI * 0.5f + m_clampf(p->pitch, -1.2f, 1.2f) + pp->kick * 0.18f;
     c->arm_rz = 0.05f;
-    c->arm_lx = c->arm_rx;
-    c->arm_lz = -0.45f;
     c->elbow_r = 0;
     pp->facing = p->yaw;
+    // a wand is pointed one-handed, the off hand back for balance; a bow takes both
+    if (art == VX_ART_WAND) {
+      c->arm_lx = -0.35f;
+      c->arm_lz = 0.25f;
+    } else {
+      c->arm_lx = c->arm_rx;
+      c->arm_lz = -0.45f;
+    }
   }
   if (p->hook_state != VX_HOOK_NONE) {
     pp->facing = vx_hook_facing(p);

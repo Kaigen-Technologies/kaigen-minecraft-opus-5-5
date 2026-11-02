@@ -371,6 +371,7 @@ typedef struct {
   VxPose pose;
   f32 time, facing;
   f32 aim_t; // seconds left holding a ranged weapon out along the view
+  f32 kick;  // a shot's recoil, 1 at the shot and easing to 0
   b32 swinging;
 } VxPuppet;
 
@@ -475,7 +476,9 @@ typedef struct {
 
 typedef enum {
   VX_PROJ_ARROW,
-  VX_PROJ_SPARK,
+  VX_PROJ_SPARK, // the wand's rainbow bolt
+  VX_PROJ_BEAM,  // the Enchanted Sword's flying blade of light
+  VX_PROJ_FROST, // the Ice Blade's shard
   VX_PROJ_STAR,  // a fallen star on its way down
   VX_PROJ_PRISM, // the Empress's bolt: flies out in a fan, then turns on the player
   VX_PROJ_LANCE, // the Empress's crescent, thrown straight at the player
@@ -508,6 +511,8 @@ typedef struct {
   const char *weapon; // the swinging weapon's name
   u32 swing_id;
   u32 trail_tint;
+  u32 glint_tint; // the special blades' dust off the tip, 0 for none
+  b32 stab;       // a shortsword thrusts along the view instead of swinging
   v3 tip_prev; // the blade tip last frame, relative to the chest
   b32 tip_valid;
   VxProjectile *proj; // VX_MAX_PROJECTILES
