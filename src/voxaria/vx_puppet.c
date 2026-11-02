@@ -160,11 +160,12 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
     g.lean = 0.1f * walk;
     g.bounce = (m_absf(m_cosf(ph)) - 0.5f) * 0.09f * walk + breathe * 0.012f * (1 - walk);
   }
-  // tools, weapons and torches ride in a raised fist out to the side, seen past the body from behind, swaying a little with the stride
+  // tools, weapons and torches: upper arm 30 degrees forward, forearm bent about 50 more, the fist at the chest
   b32 holding = held > 0 && (!vx_item_is_block(held) || vx_shape[held] == VX_SHAPE_TORCH) && !(p->in_water && !p->on_ground);
   if (holding) {
-    g.arm_rx = 1.2f + g.arm_rx * 0.12f;
-    g.arm_rz = 0.4f; // positive turns the right arm out
+    g.arm_rx = 0.52f + g.arm_rx * 0.12f;
+    g.arm_rz = 0.12f; // positive turns the right arm out
+    g.elbow_r = 0.85f;
   }
   f32 k = 1 - m_expf(-16.0f * dt);
   VxPose *c = &pp->pose;
@@ -175,6 +176,7 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
   c->arm_rx = vx_ease_to(c->arm_rx, g.arm_rx, k);
   c->arm_lz = vx_ease_to(c->arm_lz, g.arm_lz, k);
   c->arm_rz = vx_ease_to(c->arm_rz, g.arm_rz, k);
+  c->elbow_r = vx_ease_to(c->elbow_r, g.elbow_r, k);
   c->leg_lx = vx_ease_to(c->leg_lx, g.leg_lx, k);
   c->leg_rx = vx_ease_to(c->leg_rx, g.leg_rx, k);
   c->leg_lz = vx_ease_to(c->leg_lz, g.leg_lz, k);
@@ -190,6 +192,7 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
     f32 s = swing_t * swing_t * (3 - 2 * swing_t);
     c->arm_rx = 3.0f + (-0.1f - 3.0f) * s;
     c->arm_rz = -0.12f;
+    c->elbow_r = 0;
   }
   // head follows the view, within what a neck allows
   c->head_x = vx_ease_to(c->head_x, m_clampf(p->pitch, -0.6f, 0.7f), k);
@@ -205,6 +208,7 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
     c->arm_rz = 0.05f;
     c->arm_lx = c->arm_rx;
     c->arm_lz = -0.45f;
+    c->elbow_r = 0;
     pp->facing = p->yaw;
   }
   if (p->hook_state != VX_HOOK_NONE) {
@@ -213,6 +217,7 @@ void vx_puppet_animate(VxPuppet *pp, const VxPlayer *p, VxItemId held, f32 swing
     f64 dx = p->hook_pos.x - s.x, dy = p->hook_pos.y - s.y, dz = p->hook_pos.z - s.z;
     c->arm_rx = m_atan2f((f32)m_sqrt(dx * dx + dz * dz), (f32)-dy);
     c->arm_rz = 0;
+    c->elbow_r = 0;
   }
   c->hold = holding && !pp->swinging && pp->aim_t <= 0 && p->hook_state == VX_HOOK_NONE;
 }
@@ -456,12 +461,15 @@ void vx_puppet_body(VxEntities *e, const VxWorld *w, VxV3d cam, VxV3d feet, f32 
     vx_ebox(e, arm, (v3){-0.16f, -0.44f, -0.16f}, (v3){0.16f, 0.1f, 0.16f}, L, shirt, sky, blk);
     // armour runs to gauntlets; a robe's sleeves to the wrist
     v3 fore = armor ? v3_scale(pc->body_c, 0.88f) : pc->body_gear == VX_BODY_ROBE ? pc->shirt : pc->skin;
-    vx_ebox(e, arm, (v3){-0.14f, -0.86f, -0.14f}, (v3){0.14f, -0.44f, 0.14f}, L, fore, sky, blk);
+    // the forearm turns at the elbow, its box still authored in the arm's space
+    f32 bend = s ? q->elbow_r : 0;
+    m4 lower = m4_translated(m4_rotate_x(m4_translated(arm, (v3){0, -0.44f, 0}), bend), (v3){0, 0.44f, 0});
+    vx_ebox(e, lower, (v3){-0.14f, -0.86f, -0.14f}, (v3){0.14f, -0.44f, 0.14f}, L, fore, sky, blk);
     if (armor) vx_ebox(e, arm, (v3){-0.21f, -0.06f, -0.21f}, (v3){0.21f, 0.2f, 0.21f}, L, v3_scale(pc->body_c, 1.1f), sky, blk);
     if (s && item > 0) {
-      m4 hand = m4_translated(arm, (v3){0, -0.8f, -0.04f});
-      // held between swings: the arm's turn undone, so the item stands straight up out of the fist
-      m4 up = m4_rotate_x(m4_rotate_z(hand, -q->arm_rz), -q->arm_rx);
+      m4 hand = m4_translated(lower, (v3){0, -0.8f, -0.04f});
+      // held between swings: the arm's and elbow's turns undone, so the item stands straight up out of the fist
+      m4 up = m4_rotate_x(m4_rotate_z(m4_rotate_x(hand, -bend), -q->arm_rz), -q->arm_rx);
       if (q->hold && !vx_item_is_block(item)) {
         // the art's diagonal from grip to tip turned to vertical, its face to the side
         m4 t = m4_rotate_z(m4_rotate_y(up, PI * 0.5f), PI * 0.25f);

@@ -362,6 +362,7 @@ typedef struct {
   f32 wing_fold, wing_flap; // 1 folded along the back, 0 spread; flap angle
   f32 head_x, head_y;
   f32 arm_lx, arm_lz, arm_rx, arm_rz;
+  f32 elbow_r; // the right forearm's bend forward from the upper arm
   f32 leg_lx, leg_lz, leg_rx, leg_rz;
   b32 hold; // the right fist raised with its item straight up, as the reference holds a sword between swings
 } VxPose;
